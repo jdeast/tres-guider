@@ -3,15 +3,20 @@ from pipython import GCSDevice, pitools
 import socket
 import math
 import ipdb
+import sys, os
 
 class tiptilt:
 
     def __init__(self, base_directory, config_file):
         self.base_directory=base_directory
-        self.config_file = config_file
+        self.config_file = self.base_directory + '/config/' + config_file
         
         # read the config file
-        config = ConfigObj(self.base_directory + '/config/' + self.config_file)
+        if os.path.exists(self.config_file):
+            config = ConfigObj(self.config_file)
+        else:
+            print 'Config file not found: (' + self.config_file + ')'
+            sys.exit()
 
         # serial number of the TIP/TILT stage and controller
         self.sntiptilt = config['SN_TIPTILT']
@@ -42,16 +47,18 @@ class tiptilt:
         #"*** GCSError: There is no interface or DLL handle with the given ID (-9)" That error requires a power cycle
 
         found = False
+        if len(usbdevices) == 0:
+            print "No PI devices found"
+            sys.exit()
+            
         for device in usbdevices:
-		if self.sncontroller in device:
-			found = True
+	    if self.sncontroller in device:
+		found = True
         if not found:
-		print 'Serial number supplied for controller (' + self.sncontroller + ') does not match any of the connected USB devices; check ' + self.config_file
-		print "The connected devices are:"
-		print usbdevices
-		return False
-
-		
+	    print 'Serial number supplied for controller (' + self.sncontroller + ') does not match any of the connected USB devices; check ' + self.config_file
+	    print "The connected devices are:"
+	    print usbdevices
+            sys.exit()		
 
         self.tiptilt.ConnectUSB(serialnum=self.sncontroller)
         #self.tiptilt.ConnectUSB(serialnum=self.sntiptilt)
@@ -102,17 +109,16 @@ class tiptilt:
 
 if __name__ == '__main__':
 
-    if socket.gethostname() == 'onion':
-        base_directory = '/h/onion0/tres/'
+    if socket.gethostname() == 'tres-guider':
+        base_directory = '/home/tres/tres-guider'
     else:
-        base_directory = 'C:/tres-guider/'
+        print 'unsupported system'
+        sys.exit()
     
     config_file = 'tiptilt.ini'
     tiptilt = tiptilt(base_directory, config_file)
     tiptilt.connect()
     tiptilt.move_tip_tilt(0.2,0.2)
-
-    
 
     ipdb.set_trace()
 
