@@ -52,7 +52,12 @@ class calstage:
         if not self.calstage.IsConnected():
             print 'Error connecting to device'
 
-        pitools.startup(self.calstage)
+        # enable servo and home to negative limit if necessary
+        pitools.startup(self.calstage, refmodes=('FNL'))
+        
+        # enable servo home to center if necessary
+        #pitools.startup(self.calstage, refmodes=('FRF')) 
+
 
     def allowedMove(self,position):
         if self.minpos == None: self.minpos = self.calstage.qTMN()['1']
@@ -123,8 +128,8 @@ if __name__ == '__main__':
     config_file = 'calstage.ini'
     calstage = calstage(base_directory, config_file)
 
-    ipdb.set_trace()
     calstage.connect()
+    ipdb.set_trace()
     calstage.move_to_science()
     calstage.move_to_sky()
     calstage.move_to_out()
