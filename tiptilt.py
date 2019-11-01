@@ -13,7 +13,7 @@ class tiptilt:
         self.base_directory=base_directory
         self.config_file = self.base_directory + '/config/' + config_file
 
-        # set up the log file                                                                                                                    
+        # set up the log file
         if logger == None:
             self.logger = utils.setup_logger(base_directory + '/log/', 'calstage')
         else: self.logger = logger
@@ -26,8 +26,10 @@ class tiptilt:
             sys.exit()
 
         # serial number of the TIP/TILT stage and controller
-        self.sntiptilt = config['SN_TIPTILT']
-        self.sncontroller = config['SN_CONTROLLER']
+        self.sn_tiptilt = config['SN_TIPTILT']
+        self.sn_controller = config['SN_CONTROLLER']
+        self.model_tiptilt = config['MODEL_TIPTILT']
+        self.model_controller = config['MODEL_CONTROLLER']
 
         # stage steps per arcsecond on the sky 
         self.steps_per_arcsec = float(config['STEPS_PER_ARCSEC'])
