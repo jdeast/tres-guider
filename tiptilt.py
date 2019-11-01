@@ -4,18 +4,25 @@ import socket
 import math
 import ipdb
 import sys, os
+import logging
+import utils
 
 class tiptilt:
 
-    def __init__(self, base_directory, config_file):
+    def __init__(self, base_directory, config_file, logger=None):
         self.base_directory=base_directory
         self.config_file = self.base_directory + '/config/' + config_file
+
+        # set up the log file                                                                                                                    
+        if logger == None:
+            self.logger = utils.setup_logger(base_directory + '/log/', 'calstage')
+        else: self.logger = logger
         
         # read the config file
         if os.path.exists(self.config_file):
             config = ConfigObj(self.config_file)
         else:
-            print 'Config file not found: (' + self.config_file + ')'
+            self.logger.error('Config file not found: (' + self.config_file + ')')
             sys.exit()
 
         # serial number of the TIP/TILT stage and controller
@@ -48,24 +55,24 @@ class tiptilt:
 
         found = False
         if len(usbdevices) == 0:
-            print "No PI devices found"
+            self.logger.error("No PI devices found")
             sys.exit()
             
         for device in usbdevices:
-	    if self.sncontroller in device:
-		found = True
+            if self.sncontroller in device:
+                found = True
         if not found:
-	    print 'Serial number supplied for controller (' + self.sncontroller + ') does not match any of the connected USB devices; check ' + self.config_file
-	    print "The connected devices are:"
-	    print usbdevices
-            sys.exit()		
+            self.logger.error('Serial number in ' + self.config_file + ' (' + self.sncontroller + ') does not match any of the connected USB devices; check power and USB')
+            for device in usbdevices:
+                self.logger.info(str(device) + ' is connected')
+            sys.exit()
 
         self.tiptilt.ConnectUSB(serialnum=self.sncontroller)
         #self.tiptilt.ConnectUSB(serialnum=self.sntiptilt)
         if not self.tiptilt.IsConnected():
-            print 'Error connecting to device'
+            self.logger.error('Error connecting to device')
 
-        pitools.startup(self.tiptilt)
+        pitools.startup(self.tiptilt)#, refmodes=('FNL'))
         
     '''
     Move the tip/tilt stage directly in stage coordinates. Check for
@@ -112,11 +119,12 @@ if __name__ == '__main__':
     if socket.gethostname() == 'tres-guider':
         base_directory = '/home/tres/tres-guider'
     else:
-        print 'unsupported system'
+        print('unsupported system')
         sys.exit()
-    
+
     config_file = 'tiptilt.ini'
     tiptilt = tiptilt(base_directory, config_file)
+
     tiptilt.connect()
     tiptilt.move_tip_tilt(0.2,0.2)
 

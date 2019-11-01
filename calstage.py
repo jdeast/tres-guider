@@ -4,12 +4,19 @@ import socket
 import math
 import ipdb
 import sys, os
+import utils
+import logging
 
 class calstage:
 
-    def __init__(self, base_directory, config_file):
+    def __init__(self, base_directory, config_file, logger=None):
         self.base_directory=base_directory
         self.config_file = self.base_directory + '/config/' + config_file
+
+        # set up the log file
+        if logger == None:
+            self.logger = utils.setup_logger(base_directory + '/log/', 'calstage')
+        else: self.logger = logger
 
         # read the config file
         config = ConfigObj(self.config_file)
@@ -18,7 +25,7 @@ class calstage:
         if os.path.exists(self.config_file):
             config = ConfigObj(self.config_file)
         else:
-            print 'Config file not found: (' + self.config_file + ')'
+            self.logger.error('Config file not found: (' + self.config_file + ')')
             sys.exit()
 
         self.science_position = float(config['SCIENCEPOS'])
@@ -36,21 +43,21 @@ class calstage:
 
         found = False
         if len(usbdevices) == 0:
-            print "No PI devices found"
+            self.logger.error("No PI devices found")
             sys.exit()
             
         for device in usbdevices:
-	    if self.sncontroller in device:
-		found = True
+            if self.sncontroller in device:
+                found = True
         if not found:
-	    print 'Serial number supplied for controller (' + self.sncontroller + ') does not match any of the connected USB devices; check ' + self.config_file
-	    print "The connected devices are:"
-	    print usbdevices
+            self.logger.error('Serial number in ' + self.config_file + ' (' + self.sncontroller + ') does not match any of the connected USB devices; check power and USB')
+            for device in usbdevices:
+                self.logger.info(str(device) + ' is connected')
             sys.exit()		
 
         self.calstage.ConnectUSB(serialnum=self.sncontroller)
         if not self.calstage.IsConnected():
-            print 'Error connecting to device'
+            self.logger.error('Error connecting to device')
 
         # enable servo and home to negative limit if necessary
         pitools.startup(self.calstage, refmodes=('FNL'))
@@ -73,17 +80,18 @@ class calstage:
         if not self.calstage.IsConnected():
             self.connect()
             if not self.calstage.IsConnected():
-              print("Error connecting to stage")
-              return False
+                self.logger.error("Error connecting to stage")
+                return False
 
         # make sure the move is in range
         if not self.allowedMove(position):
-          print("Requested move out of bounds")
-          return False
+            self.logger.error("Requested move out of bounds")
+            return False
            
         # move the stage
+        self.logger.info("moving the stage to " + str(position))
         self.calstage.MOV('1',position)
-
+        
         # success!
         return True
 
@@ -97,8 +105,8 @@ class calstage:
 
         # make sure it moved where we wanted (within tolerance)
         if abs(position - self.get_position()) > tol:
-          print("Error moving to requested position")
-          return False
+            self.logger.error("Error moving to requested position")
+            return False
         
         # success!
         return True
@@ -122,7 +130,7 @@ if __name__ == '__main__':
     elif socket.gethostname() == 'Jason-THINK':
         base_directory = 'C:/tres-guider/'
     else:
-        print 'unsupported system'
+        print('unsupported system')
         sys.exit()
 
     config_file = 'calstage.ini'
