@@ -6,6 +6,7 @@ import ipdb
 import sys, os
 import logging
 import utils
+import numpy as np
 
 class tiptilt:
 
@@ -13,6 +14,8 @@ class tiptilt:
         self.base_directory=base_directory
         self.config_file = self.base_directory + '/config/' + config_file
 
+        self.simulate=simulate
+        
         # set up the log file
         if logger == None:
             self.logger = utils.setup_logger(base_directory + '/log/', 'calstage')
@@ -42,16 +45,39 @@ class tiptilt:
         else: self.sign = 1.0
 
         # use the PI python library to initialize the device
-        self.tiptilt = GCSDevice()
+        if not self.simulate: self.tiptilt = GCSDevice()
 
-    def allowedMove():
-        self.tiptilt.qTMN() # minimum of each axis
-        self.tiptilt.qTMX() # maximum of each axis
-        self.tiptilt.qPOS() # current position
+        # range of motion
+        self.mintip = None
+        self.maxtip = None
+        self.mintilt = None
+        self.maxtilt = None
+        
+        self.position = {'A':None,'B':None}
+        
+    def get_allowed_ranges(self):
+
+        if self.simulate:
+            self.mintip = 0.0
+            self.maxtip = 2.0
+            self.mintilt = 0.0
+            self.maxtilt = 2.0
+        else:
+            self.mintip = self.tiptilt.qTMN()['A']
+            self.maxtip = self.tiptilt.qTMX()['A']
+            self.mintilt = self.tiptilt.qTMN()['B']
+            self.maxtilt = self.tiptilt.qTMX()['B']
 
     def connect(self):
-        usbdevices = self.tiptilt.EnumerateUSB()
 
+        if self.simulate:
+            self.get_allowed_ranges()
+            return
+
+        if self.tiptilt.IsConnected():
+            self.logger.info('Already connected')
+        
+        usbdevices = self.tiptilt.EnumerateUSB()
 
         #"*** GCSError: There is no interface or DLL handle with the given ID (-9)" That error requires a power cycle
 
@@ -75,6 +101,12 @@ class tiptilt:
             self.logger.error('Error connecting to device')
 
         pitools.startup(self.tiptilt)#, stages=['S-340'], servostates=[True])#, refmodes=('FNL'))
+
+        # get the allowed ranges
+        self.get_allowed_ranges()
+        
+        # move to the middle of the range
+        self.move_tip_tilt(1.0,1.0)
         
     '''
     Move the tip/tilt stage directly in stage coordinates. Check for
@@ -82,15 +114,27 @@ class tiptilt:
     '''
     def move_tip_tilt(self, tip, tilt):
         # make sure we're connected
-        if not self.tiptilt.IsConnected():
-            self.connect()
+        if not self.simulate:
+            if not self.tiptilt.IsConnected():
+                self.connect()
 
-        # TODO: check bounds of requested move
+        # check bounds of requested move
+        if tip < self.mintip or tip > self.maxtip or tilt < self.mintilt or tilt > self.maxtilt:
+            self.logger.error("Requested move out of range")
+            return
 
+        self.logger.info("moving to tip = " + str(tip) + ', tilt=' + str(tilt))
+        
         # move
-        self.tiptilt.MOV('A',tip)
-        self.tiptilt.MOV('B',tilt)
+        if not self.simulate:
+            self.tiptilt.MOV('A',tip)
+            self.tiptilt.MOV('B',tilt)
 
+        self.position['A'] = tip
+        self.position['B'] = tilt
+
+        # wait for move?
+        
         # make sure it moved where we wanted
         #if position != self.get_position():
         #    pass
@@ -103,22 +147,25 @@ class tiptilt:
     '''
     def move_north_east(self, north, east):
 
-
         # get current position
         ttpos = self.get_position()
                 
         # translate north & east (arcsec on sky) to 
         # tip and tilt (stage steps)
         # requires angle, magnitude, and flip
-        tip  = self.sign*self.steps_per_arcsec*(north*math.cos(self.theta) - east*math.sin(self.theta)) - ttpos['A']
-        tilt =           self.steps_per_arcsec*(north*math.sin(self.theta) + east*math.cos(self.theta)) - ttpos['B']
+        tip  = ttpos['A'] + self.sign*self.steps_per_arcsec*(north*math.cos(self.theta) - east*math.sin(self.theta))
+        tilt = ttpos['B'] +           self.steps_per_arcsec*(north*math.sin(self.theta) + east*math.cos(self.theta))
 
-        ipdb.set_trace()
-        
         # move the tip/tilt
         return self.move_tip_tilt(tip,tilt)
 
+
+    # qPOS doesn't seem to work, but it seems to move
+    # keep track of the position ourselves
     def get_position(self):
+
+        return self.position
+        
         # make sure we're connected
         if not self.tiptilt.IsConnected():
             self.connect()
@@ -140,6 +187,7 @@ if __name__ == '__main__':
     tiptilt.connect()
     tiptilt.move_tip_tilt(0.2,0.2)
     print(tiptilt.get_position())
+
     tiptilt.move_tip_tilt(0.0,0.0)
     print(tiptilt.get_position())
 

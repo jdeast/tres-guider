@@ -42,13 +42,23 @@ class tres:
         self.guider = imager(base_directory, 'zyla.ini', logger=self.logger, simulate=guider_simulate)
         self.calstage = calstage(base_directory, 'calstage.ini', logger=self.logger, simulate=calstage_simulate)
         self.tiptilt = tiptilt(base_directory, 'tiptilt.ini', logger=self.logger, simulate=tiptilt_simulate)
+
+        # connect the devices
+        self.tiptilt.connect()
+        self.calstage.connect()
         
     # this assumes there are is no confusion (within tolerance) and each offset is small (< tolerance)
     # annulus guiding (pick star closest to fiber and guide)                     -- done
     # offset guiding (pick star closest to position offset from fiber and guide) -- done
     # platesolve and guide to RA/Dec -- TODO (enough stars?)
     # platesolve and guide to Star closest to RA/Dec -- TODO (enough stars?)
-    def guide(self, exptime, offset=(0.0,0.0), tolerance=3.0, simulate=False):
+    #exptime - the exposure time, in seconds
+    # offset - a tuple describing the (x,y) offset from the fiber. Pick the star closest to there and keep it there.
+    # tolerance - beyond this tolerance (arcsec), don't guide
+    # simulate - Boolean. If true, will use a simulated stellar image
+    # save - boolean. If true, it will save the guider images (and increase overhead)
+    # subframe - Boolean. If true, it will use a 3*tolerance subframe to guide (decrease overhead). 
+    def guide(self, exptime, offset=(0.0,0.0), tolerance=3.0, simulate=False, save=False, subframe=True):
 
         # move to the middle of the range
         self.tiptilt.move_tip_tilt(1.0,1.0)
@@ -61,10 +71,10 @@ class tres:
                   Deadband = self.guider.Dband,
                   Correction_max = self.guider.Corr_max)
 
-        # TODO: refine fiber position on the chip (does it change?)
+        # TODO: refine fiber position on the chip (does it change? do it elsewhere?)
 
         # load the PID set point
-        p.setPoint((self.guider.x_science_fiber, self.guider.y_science_fiber))
+        p.setPoint((self.guider.x_science_fiber+offset[0], self.guider.y_science_fiber+offset[1]))
         
         # TODO: pick guide star, move it to fiber via telescope (pre-load tip/tilt?)
         # requires TCS communication (current functionality requires observer to do this)
@@ -72,31 +82,74 @@ class tres:
         # main loop
         while self.guider.guiding:
 
+            # set the subframe
+            if subframe:
+                subframesize = int(round(1.5*tolerance/self.guider.platescale))
+                if (subframesize % 2) == 1: subframesize +=1 # make sure it's even
+                x1 = int(round(self.guider.x_science_fiber + offset[0] - subframesize))
+                x2 = int(round(self.guider.x_science_fiber + offset[0] + subframesize))
+                y1 = int(round(self.guider.y_science_fiber + offset[1] - subframesize))
+                y2 = int(round(self.guider.y_science_fiber + offset[1] + subframesize))
+                self.guider.set_roi(x1,x2,y1,y2)
+            
             if simulate:
                 t0 = datetime.datetime.utcnow()
-                self.guider.simulate_star_image([int(self.guider.x_science_fiber)],[int(self.guider.y_science_fiber)],[1e6],1.5, noise=10.0)
+                xstar = int(round(self.guider.x_science_fiber + np.random.uniform(low=-1.0,high=1.0)))
+                ystar = int(round(self.guider.y_science_fiber + np.random.uniform(low=-1.0,high=1.0)))
+                self.guider.simulate_star_image([xstar],[ystar],[1e6], 1.5, noise=10.0)
                 elapsed_time = (datetime.datetime.utcnow()-t0).total_seconds()
+            else:
+                # expose while we get the header info
+                expose_thread = threading.Thread(target=self.guider.take_image, args=(exptime,))
+                expose_thread.name = 'guider_expose_thread'
+                expose_thread.start()
+
+            # get the header info
+            if save: hdr = self.get_header()
+            
+            # wait for the exposure to complete
+            if simulate:
                 if elapsed_time < exptime:
                     time.sleep(exptime-elapsed_time)
-            else:
-                self.guider.take_image(exptime)
+            else: expose_thread.join()
 
+            # save the image
+            if save:
+                objname = 'test'
+                files = glob.glob(self.guider.datapath + "*.fits")
+                index = str(len(files)+1).zfill(4)
+                datestr = datetime.datetime.utcnow().strftime('%m%d%y') 
+                filename = self.guider.datapath + objname + '.' + datestr + '.guider.' + index + '.fits'
+
+                # saving can go on in the background
+                kwargs={'hdr':hdr}
+                save_image_thread = threading.Thread(target=self.guider.save_image,args=(filename,),kwargs=kwargs)
+                save_image_thread.name = 'save_image_thread'
+                save_image_thread.start()
+                
+                #self.guider.save_image(filename, hdr=hdr)
+
+            self.logger.info("Finding stars")
             stars = self.guider.get_stars()
             
             if len(stars) == 0:
-                self.logger.warning("No guide stars in image")
+                self.logger.warning("No guide stars in image; skipping correction")
+                if save: save_image_thread.join()
                 continue
-
-            # TODO: save guide image?
 
             # find the closest star to the desired position                            
             dx = stars[:,0] - (self.guider.x_science_fiber-offset[0])
             dy = stars[:,1] - (self.guider.y_science_fiber-offset[1])
             dist = np.sqrt(dx*dx + dy*dy)*self.guider.platescale
             ndx = np.argmin(dist)
+            self.logger.info("Using guide star (" + str(stars[ndx,0]) + ',' +
+                             str(stars[ndx,1]) + ') ' + str(dist[ndx]) +
+                             ' pixels from the requested position (' +
+                             str(self.guider.x_science_fiber-offset[0]) + ',' +
+                             str(self.guider.y_science_fiber-offset[1]) + ')')
 
             # if the star disappears, don't correct to a different star
-            # magnitude tolerance, too? (probably not)
+            # magnitude tolerance, too? (probably not -- clouds could cause trouble)
             if dist < tolerance:
                 p.setPoint((self.guider.x_science_fiber+offset[0],self.guider.y_science_fiber+offset[1]))
 
@@ -119,7 +172,12 @@ class tres:
                 else:
                     # TODO: move telescope, recenter tip/tilt
                     self.logger.error("Tip/tilt out of range. Must manually recenter")
+            else: self.logger.warning("Guide star too far away; skipping correction")
+                    
+            # make sure the image is saved first
+            if save: save_image_thread.join()
 
+                    
     def take_image(self, filename, exptime, overwrite=False):
 
         # expose while we get the header info
@@ -227,16 +285,14 @@ class tres:
 
         return hdr
 
-    def test_guide_loop(self, exptime=1.0):
+    def test_guide_loop(self, exptime=0.1, simulate=False, save=False):
         self.guider.guiding=True
 
-
-        self.guide(exptime, simulate=True)
-
-        ipdb.set_trace()
+#        self.guide(exptime, simulate=False)
+#        ipdb.set_trace()
         
         self.logger.info("Starting guide loop")
-        kwargs = {'simulate':True}
+        kwargs = {'simulate':simulate, 'save':save}
         guide_thread = threading.Thread(target=self.guide, args=(exptime,),kwargs=kwargs)
         guide_thread.name = 'guide_thread'
         guide_thread.start()
@@ -261,19 +317,19 @@ if __name__ == '__main__':
         sys.exit()
 
     config_file = 'tres.ini'
-    tres = tres(base_directory, config_file, calstage_simulate=True)
+    tres = tres(base_directory, config_file, calstage_simulate=True, tiptilt_simulate=False)
     
-    tres.test_guide_loop()
+    tres.test_guide_loop(simulate=False, save=False, exptime=0.01)
     
+    ipdb.set_trace()
+
     tres.guider.simulate_star_image([600,30,1500],[100,350,1700],[1000000,1e6,1e6],1.5, noise=10)
     stars = tres.guider.get_stars()
-    print(stars)
     hdr = tres.get_header()
     tres.guider.save_image('test_star.fits', hdr=hdr, overwrite=True)
     ipdb.set_trace()
 
     tres.take_image('test.fits', 0.1, overwrite=True)
-    ipdb.set_trace()
-
+    
 
 

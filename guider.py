@@ -104,32 +104,35 @@ class imager:
         
         # add each of the stars
         for ii in range(len(x)):
+
+            xii = x[ii]-self.x1+1
+            yii = y[ii]-self.y1+1
             
             # make sure the stamp fits on the image (if not, truncate the stamp)
-            if x[ii] >= boxsize:
-                x1 = x[ii]-boxsize
+            if xii >= boxsize:
+                x1 = xii-boxsize
                 x1stamp = 0
             else:
                 x1 = 0
-                x1stamp = boxsize-x[ii]
-            if x[ii] <= (xwidth-boxsize):
-                x2 = x[ii]+boxsize+1
+                x1stamp = boxsize-xii
+            if xii <= (xwidth-boxsize):
+                x2 = xii+boxsize+1
                 x2stamp = 2*boxsize+1
             else:
                 x2 = xwidth
-                x2stamp = xwidth - x[ii] + boxsize
-            if y[ii] >= boxsize:
-                y1 = y[ii]-boxsize
+                x2stamp = xwidth - xii + boxsize
+            if yii >= boxsize:
+                y1 = yii-boxsize
                 y1stamp = 0
             else:
                 y1 = 0
-                y1stamp = boxsize-y[ii]
-            if y[ii] <= (ywidth-boxsize):
-                y2 = y[ii]+boxsize+1
+                y1stamp = boxsize-yii
+            if yii <= (ywidth-boxsize):
+                y2 = yii+boxsize+1
                 y2stamp = 2*boxsize+1
             else:
                 y2 = ywidth
-                y2stamp = ywidth - y[ii] + boxsize
+                y2stamp = ywidth - yii + boxsize
             
             if (y2-y1) > 0 and (x2-x1) > 0:
                 # normalize the star to desired flux
@@ -141,7 +144,7 @@ class imager:
 
                 # add the star to the image
                 self.image[y1:y2,x1:x2] += noisystar
-            else: print("star off image (" + str(x[ii]) + "," + str(y[ii]) + "); ignoring")
+            else: self.logger.warning("star off image (" + str(xii) + "," + str(yii) + "); ignoring")
                 
         # now convert to 16 bit int
         self.image = self.image.astype(np.int16)
@@ -158,6 +161,7 @@ class imager:
 
     def save_image(self, filename, overwrite=False, hdr=None):
 
+        self.logger.info("Saving " + filename)
         # make a minimal header if not supplied
         if hdr==None: hdr = fits.Header()
 
@@ -171,7 +175,7 @@ class imager:
         # save the image and header
         hdu = fits.PrimaryHDU(self.image, header=hdr)
         hdulist = fits.HDUList([hdu])
-        hdulist.writeto(self.datapath + '/' + filename, overwrite=overwrite)
+        hdulist.writeto(filename, overwrite=overwrite)
         
     ''' set the region of interest'''
     # right now, it appears this is not supported on chip in Python
@@ -199,8 +203,11 @@ class imager:
 
         d = np.array(self.image, dtype='float')
         th = threshold_pyguide(d, level = 4)
+        if np.max(th) == False: return [] # nothing above the threshhold
         imtofeed = np.array(np.round((d*th)/np.max(d*th)*255), dtype='uint8')
         stars = centroid_all_blobs(imtofeed)
+        stars[:,0] += (self.x1 - 1)
+        stars[:,1] += (self.y1 - 1)
         return stars
         
     def calc_offsets(self):
