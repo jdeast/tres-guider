@@ -9,7 +9,7 @@ import logging
 
 class calstage:
 
-    def __init__(self, base_directory, config_file, logger=None):
+    def __init__(self, base_directory, config_file, logger=None, simulate=False):
         self.base_directory=base_directory
         self.config_file = self.base_directory + '/config/' + config_file
 
@@ -31,14 +31,25 @@ class calstage:
         self.science_position = float(config['SCIENCEPOS'])
         self.sky_position = float(config['SKYPOS'])
         self.out_position = float(config['OUTPOS'])
-        self.sncontroller = config['SNCONTROLLER']
+        self.sn = config['SNCALSTAGE']
+        self.model = config['MODEL']
+        self.sn_controller = config['SNCONTROLLER']
+        self.model_controller = config['MODELCONTROLLER']
         self.minpos = None
         self.maxpos = None
-
+        self.simulate = simulate
+        self.simulated_position = 0.0
+        
         # use the PI python library to initialize the device
-        self.calstage = GCSDevice()
+        if not self.simulate: self.calstage = GCSDevice()
 
     def connect(self):
+
+        # if simulating, just wait a second and return
+        if self.simulate:
+            time.sleep(1.0)
+            return
+        
         usbdevices = self.calstage.EnumerateUSB()
 
         found = False
@@ -47,15 +58,15 @@ class calstage:
             sys.exit()
             
         for device in usbdevices:
-            if self.sncontroller in device:
+            if self.sn_controller in device:
                 found = True
         if not found:
-            self.logger.error('Serial number in ' + self.config_file + ' (' + self.sncontroller + ') does not match any of the connected USB devices; check power and USB')
+            self.logger.error('Serial number in ' + self.config_file + ' (' + self.sn_controller + ') does not match any of the connected USB devices; check power and USB')
             for device in usbdevices:
                 self.logger.info(str(device) + ' is connected')
             sys.exit()		
 
-        self.calstage.ConnectUSB(serialnum=self.sncontroller)
+        self.calstage.ConnectUSB(serialnum=self.sn_controller)
         if not self.calstage.IsConnected():
             self.logger.error('Error connecting to device')
 
@@ -67,21 +78,29 @@ class calstage:
 
 
     def allowedMove(self,position):
-        if self.minpos == None: self.minpos = self.calstage.qTMN()['1']
-        if self.maxpos == None: self.maxpos = self.calstage.qTMX()['1']
-
+        if self.minpos == None:
+            if self.simulate: self.minpos = 0.0
+            else: self.minpos = self.calstage.qTMN()['1']
+        if self.maxpos == None:
+            if self.simulate: self.maxpos = 26.0
+            else: self.maxpos = self.calstage.qTMX()['1']
+            
         if position > self.maxpos: return False
         if position < self.minpos: return False
         return True
 
     def move(self, position):
 
-        # make sure we're connected
-        if not self.calstage.IsConnected():
-            self.connect()
+        if self.simulate:
+            time.sleep(1.0)
+            return True
+        else:
+            # make sure we're connected
             if not self.calstage.IsConnected():
-                self.logger.error("Error connecting to stage")
-                return False
+                self.connect()
+                if not self.calstage.IsConnected():
+                    self.logger.error("Error connecting to stage")
+                    return False
 
         # make sure the move is in range
         if not self.allowedMove(position):
@@ -90,7 +109,10 @@ class calstage:
            
         # move the stage
         self.logger.info("moving the stage to " + str(position))
-        self.calstage.MOV('1',position)
+        if self.simulate:
+            time.sleep(1.0)
+            self.simulated_position = position
+        else: self.calstage.MOV('1',position)
         
         # success!
         return True
@@ -101,7 +123,8 @@ class calstage:
         if not self.move(position): return False
 
         # wait for it to stop
-        pitools.waitontarget(self.calstage, axes=['1'])
+        if not self.simulate:
+            pitools.waitontarget(self.calstage, axes=['1'])
 
         # make sure it moved where we wanted (within tolerance)
         if abs(position - self.get_position()) > tol:
@@ -112,8 +135,17 @@ class calstage:
         return True
 
     def get_position(self):
+        if self.simulate: return self.simulated_position
         return self.calstage.qPOS()['1']
 
+    def get_position_string(self, tolerance=0.01):
+        position = self.get_position()
+        
+        if abs(position - self.science_position) < tolerance: return 'Science'
+        if abs(position - self.sky_position) < tolerance: return 'Sky'
+        if abs(position - self.out_position) < tolerance: return 'Out'
+        return 'Unknown'
+        
     def move_to_science(self):
         return self.move_and_wait(self.science_position)
 

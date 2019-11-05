@@ -64,8 +64,8 @@ class PID:
         #        PID[j]=self.Correction_max*np.sign(PID[j])
         if np.linalg.norm(PID)>self.Correction_max:
             PID = PID/np.linalg.norm(PID)*self.Correction_max
-        print("PID")
-        print(PID)
+        #print("PID")
+        #print(PID)
         return PID
 
     def setPoint(self,set_point):

@@ -11,10 +11,15 @@ import datetime
 import pid
 from get_all_centroids import *
 import threading
+import math
+from guider import imager
+from calstage import calstage
+from tiptilt import tiptilt
+
 
 class tres:
 
-    def __init__(self, base_directory, config_file, logger=None):
+    def __init__(self, base_directory, config_file, logger=None, calstage_simulate=False, tiptilt_simulate=False, guider_simulate=False):
         self.base_directory=base_directory
         self.config_file = self.base_directory + '/config/' + config_file
 
@@ -34,17 +39,20 @@ class tres:
             sys.exit()
 
         # set up the devices
-        self.guider = imager(base_directory, 'zyla.ini', logger=self.logger)
-        self.calstage = calstage(base_directory, 'calstage.ini', logger=self.logger)
-        self.tiptilt = tiptilt(base_directory, 'tiptilt.ini', logger=self.logger)
+        self.guider = imager(base_directory, 'zyla.ini', logger=self.logger, simulate=guider_simulate)
+        self.calstage = calstage(base_directory, 'calstage.ini', logger=self.logger, simulate=calstage_simulate)
+        self.tiptilt = tiptilt(base_directory, 'tiptilt.ini', logger=self.logger, simulate=tiptilt_simulate)
         
     # this assumes there are is no confusion (within tolerance) and each offset is small (< tolerance)
     # annulus guiding (pick star closest to fiber and guide)                     -- done
     # offset guiding (pick star closest to position offset from fiber and guide) -- done
     # platesolve and guide to RA/Dec -- TODO (enough stars?)
     # platesolve and guide to Star closest to RA/Dec -- TODO (enough stars?)
-    def guide(self, exptime, offset=(0.0,0.0), tolerance=3.0):
+    def guide(self, exptime, offset=(0.0,0.0), tolerance=3.0, simulate=False):
 
+        # move to the middle of the range
+        self.tiptilt.move_tip_tilt(1.0,1.0)
+        
         # load the PID servo parameters
         p=pid.PID(P=np.array([self.guider.KPx, self.guider.KPy]),
                   I=np.array([self.guider.KIx, self.guider.KIy]),
@@ -56,7 +64,7 @@ class tres:
         # TODO: refine fiber position on the chip (does it change?)
 
         # load the PID set point
-        p.setPoint((self.guider.xfiber, self.guider.yfiber))
+        p.setPoint((self.guider.x_science_fiber, self.guider.y_science_fiber))
         
         # TODO: pick guide star, move it to fiber via telescope (pre-load tip/tilt?)
         # requires TCS communication (current functionality requires observer to do this)
@@ -64,20 +72,33 @@ class tres:
         # main loop
         while self.guider.guiding:
 
-            self.guider.take_image(exptime)
+            if simulate:
+                t0 = datetime.datetime.utcnow()
+                self.guider.simulate_star_image([int(self.guider.x_science_fiber)],[int(self.guider.y_science_fiber)],[1e6],1.5, noise=10.0)
+                elapsed_time = (datetime.datetime.utcnow()-t0).total_seconds()
+                if elapsed_time < exptime:
+                    time.sleep(exptime-elapsed_time)
+            else:
+                self.guider.take_image(exptime)
+
             stars = self.guider.get_stars()
+            
+            if len(stars) == 0:
+                self.logger.warning("No guide stars in image")
+                continue
+
             # TODO: save guide image?
 
             # find the closest star to the desired position                            
             dx = stars[:,0] - (self.guider.x_science_fiber-offset[0])
             dy = stars[:,1] - (self.guider.y_science_fiber-offset[1])
-            dist = np.sqrt(dx^2 + dy^2)*self.guider.platescale
+            dist = np.sqrt(dx*dx + dy*dy)*self.guider.platescale
             ndx = np.argmin(dist)
 
             # if the star disappears, don't correct to a different star
             # magnitude tolerance, too? (probably not)
             if dist < tolerance:
-                p.setPoint((self.guider.xfiber+offset[0],self.guider.yfiber+offset[1]))
+                p.setPoint((self.guider.x_science_fiber+offset[0],self.guider.y_science_fiber+offset[1]))
 
                 # calculate the X & Y pixel offsets
                 dx,dy = p.update(np.array([stars[ndx,0],stars[ndx,1]]))
@@ -93,16 +114,17 @@ class tres:
                 
                 # send correction to tip/tilt
                 if move_in_range:
+                    self.logger.info("Moving tip/tilt " + str(north) + '" North, ' + str(east) + '" East')
                     self.tiptilt.move_north_east(north,east)
                 else:
                     # TODO: move telescope, recenter tip/tilt
                     self.logger.error("Tip/tilt out of range. Must manually recenter")
 
-    def take_image(self, filename, exptime):
+    def take_image(self, filename, exptime, overwrite=False):
 
         # expose while we get the header info
         expose_thread = threading.Thread(target=self.guider.take_image, args=(exptime,))
-        expose_thread.name = 'guider thread'
+        expose_thread.name = 'guider_expose_thread'
         expose_thread.start()
 
         # get the header info
@@ -112,7 +134,7 @@ class tres:
         expose_thread.join()
         
         # save the image
-        self.guider.save_image(filename, hdr=hdr)
+        self.guider.save_image(filename, hdr=hdr, overwrite=overwrite)
         
     def get_header(self):
 
@@ -135,17 +157,17 @@ class tres:
         hdr['CCD-TEMP'] = (-999,'CCD Temperature (C)') # do we have this?
 
         # Calibration stage info
-        hdr['CSPOS'] = (self.calstage.get_position_string(),"Position of the calibration stage (string)")
-        hdr['CSPOSN'] = (self.calstage.get_position(),"Position of the calibration stage (mm)")
-        hdr['CSMODEL'] = (self.calstage.model,"Model Number of the calibration stage")
+        hdr['CSPOS'] = (self.calstage.get_position_string(),"Position of the cal stage (string)")
+        hdr['CSPOSN'] = (self.calstage.get_position(),"Position of the cal stage (mm)")
+        hdr['CSMODEL'] = (self.calstage.model,"Model Number of the cal stage")
         hdr['CSSN'] = (self.calstage.sn,"Serial number of the calibration stage")
-        hdr['CSCMODEL'] = (self.calstage.model_controller,"Model Number of the calibration stage controller")
-        hdr['CSCSN'] = (self.calstage.sn_controller,"Serial number of the calibration stage controller")
+        hdr['CSCMODEL'] = (self.calstage.model_controller,"Model of the cal stage controller")
+        hdr['CSCSN'] = (self.calstage.sn_controller,"Serial number of the cal stage controller")
 
         # Tip/Tilt stage info
-        ttpos = self.tiptilt.getpos()
-        hdr['TTTIPPOS'] = (ttpos[0],"Tip Position of the tip/tilt stage (urad)")
-        hdr['TTTILPOS'] = (ttpos[1],"Tilt Position of the tip/tilt stage (urad)")
+        ttpos = self.tiptilt.get_position()
+        hdr['TTTIPPOS'] = (ttpos['A'],"Tip Position of the tip/tilt stage (urad)")
+        hdr['TTTILPOS'] = (ttpos['B'],"Tilt Position of the tip/tilt stage (urad)")
         hdr['TTMODEL'] = (self.tiptilt.model,"Model number of the tip/tilt stage")
         hdr['TTSN'] = (self.tiptilt.sn,"Serial number of the tip/tilt stage")
         hdr['TTCMODEL'] = (self.tiptilt.model_controller,"Model number of the tip/tilt stage controller")
@@ -202,6 +224,31 @@ class tres:
         #hdr['PMDEC'] = (pmdec, "Target Proper Motion in DEC (mas/yr)")
         #hdr['PARLAX'] = (parallax, "Target Parallax (mas)")
         #hdr['RV'] = (rv, "Target RV (km/s)")
+
+        return hdr
+
+    def test_guide_loop(self, exptime=1.0):
+        self.guider.guiding=True
+
+
+        self.guide(exptime, simulate=True)
+
+        ipdb.set_trace()
+        
+        self.logger.info("Starting guide loop")
+        kwargs = {'simulate':True}
+        guide_thread = threading.Thread(target=self.guide, args=(exptime,),kwargs=kwargs)
+        guide_thread.name = 'guide_thread'
+        guide_thread.start()
+
+        time.sleep(60)
+
+        self.logger.info("Done guiding")
+        self.guider.guiding=False
+
+        guide_thread.join()
+
+        
         
 if __name__ == '__main__':
 
@@ -214,8 +261,18 @@ if __name__ == '__main__':
         sys.exit()
 
     config_file = 'tres.ini'
-    tres = imager(base_directory, config_file)
+    tres = tres(base_directory, config_file, calstage_simulate=True)
+    
+    tres.test_guide_loop()
+    
+    tres.guider.simulate_star_image([600,30,1500],[100,350,1700],[1000000,1e6,1e6],1.5, noise=10)
+    stars = tres.guider.get_stars()
+    print(stars)
+    hdr = tres.get_header()
+    tres.guider.save_image('test_star.fits', hdr=hdr, overwrite=True)
+    ipdb.set_trace()
 
+    tres.take_image('test.fits', 0.1, overwrite=True)
     ipdb.set_trace()
 
 
