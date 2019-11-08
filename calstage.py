@@ -169,8 +169,8 @@ if __name__ == '__main__':
     config_file = 'calstage.ini'
     calstage = calstage(base_directory, config_file)
 
-    calstage.connect()
     ipdb.set_trace()
+    calstage.connect()
     calstage.move_to_science()
     calstage.move_to_sky()
     calstage.move_to_out()

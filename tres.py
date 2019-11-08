@@ -283,6 +283,8 @@ class tres:
         #hdr['PARLAX'] = (parallax, "Target Parallax (mas)")
         #hdr['RV'] = (rv, "Target RV (km/s)")
 
+        # weather keywords ??
+        
         return hdr
 
     def test_guide_loop(self, exptime=0.1, simulate=False, save=False):
