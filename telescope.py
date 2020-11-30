@@ -19,7 +19,7 @@ import select
 ''' 
 this is a telescope class that implements DFM Galil TCS
 '''
-class telescope:
+class Telescope:
 
     def __init__(self, base_directory, config_file, logger=None, simulate=False):
         self.base_directory=base_directory
@@ -53,7 +53,8 @@ class telescope:
             s.connect((self.server,self.port))
             self.logger.info("Connected")
         except:
-            self.logger.error("No response from the Galil TCS Server (" + self.server + ':' + str(self.port) + ". Start TCSGalil and try again")
+            self.logger.error("No response from the Galil TCS Server (" + self.server +
+                              ':' + str(self.port) + ". Start TCSGalil and try again")
             ipdb.set_trace()
 
             sys.exit() # too harsh?
@@ -70,7 +71,7 @@ class telescope:
         time_elapsed = 0.0
         while True and time_elapsed < timeout:
             time_elapsed = (datetime.datetime.utcnow()-t0).total_seconds()
-            data = s.recv(1024)
+            data += s.recv(1024)
             if data[-1] == ';': break
 
         self.logger.info("Closing connection")
@@ -120,8 +121,10 @@ class telescope:
 
     
     def set_mount_mode(self, mode):
-        if mode <> 0 and mode <> 1 and mode <> 2 and mode <> 3:
-            self.logger.error("Supplied mount mode (" + str(mode) + ") not allowed; must be 0 (Hold Position), 1 (Follow Target), 2 (Slew to Target), or 3 (Chase Target)")
+        if ((mode != 0) and (mode != 1) and (mode != 2) and (mode != 3)):
+            self.logger.error("Supplied mount mode (" + str(mode) +
+                              ") not allowed; must be 0 (Hold Position), 1 \
+                              (Follow Target), 2 (Slew to Target), or 3 (Chase Target)")
             return False
             
         return self.send("#12," + str(mode) + ";", readback=False)
@@ -253,11 +256,11 @@ if __name__ == '__main__':
         sys.exit()
 
     config_file = 'telescope.ini'
-    telescope = telescope(base_directory, config_file)
+    telescope = Telescope(base_directory, config_file)
 
     t0 = datetime.datetime.utcnow()
     status = telescope.read_tcs_status()
-    print (datetime.datetime.utcnow() - t0).total_seconds()
+    print((datetime.datetime.utcnow() - t0).total_seconds())
     if status['target_out_of_range']:
         print('target out of range')
 
@@ -272,41 +275,41 @@ if __name__ == '__main__':
     for i in range(100):
         time.sleep(1.5)
         status = telescope.read_tcs_status()
-        print status['mount_in_chase_target_mode']
-        print status['mount_in_hold_position_mode']
-        print
+        print(status['mount_in_chase_target_mode'])
+        print(status['mount_in_hold_position_mode'])
+        print()
 
     ipdb.set_trace()
 
         
     time.sleep(0.75)
     status = telescope.read_tcs_status()
-    print status['mount_in_chase_target_mode']
-    print status['mount_in_hold_position_mode']
-    print
+    print(status['mount_in_chase_target_mode'])
+    print(status['mount_in_hold_position_mode'])
+    print()
 
     status = telescope.read_tcs_status()
-    print status['mount_in_chase_target_mode']
-    print status['mount_in_hold_position_mode']
-    print
+    print(status['mount_in_chase_target_mode'])
+    print(status['mount_in_hold_position_mode'])
+    print()
 
     status = telescope.read_tcs_status()
-    print status['mount_in_chase_target_mode']
-    print status['mount_in_hold_position_mode']
-    print
+    print(status['mount_in_chase_target_mode'])
+    print(status['mount_in_hold_position_mode'])
+    print()
     
     coords1 = telescope.read_mount_coordinates()
-    print "coords before slew"
-    print coords1
+    print("coords before slew")
+    print(coords1)
 
     east = 0.0
     north = 100.0
     response = telescope.offset_target_object(east,north)
 
     coords2 = telescope.read_mount_coordinates()
-    print
-    print "coords after slew"
-    print coords2
+    print()
+    print("coords after slew")
+    print(coords2)
 
     # if status queries fail, reboot TCSGalil, then reinitialize telescope
     # sending rapid fire commands seems to tank server (no more than 1 per second)
