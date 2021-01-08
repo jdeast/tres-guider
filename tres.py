@@ -52,7 +52,7 @@ class tres:
     # offset guiding (pick star closest to position offset from fiber and guide) -- done
     # platesolve and guide to RA/Dec -- TODO (enough stars?)
     # platesolve and guide to Star closest to RA/Dec -- TODO (enough stars?)
-    #exptime - the exposure time, in seconds
+    # exptime - the exposure time, in seconds
     # offset - a tuple describing the (x,y) offset from the fiber. Pick the star closest to there and keep it there.
     # tolerance - beyond this tolerance (arcsec), don't guide
     # simulate - Boolean. If true, will use a simulated stellar image

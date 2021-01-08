@@ -14,6 +14,7 @@ import time
 import socket
 import datetime
 import select
+import threading
 
 ''' 
 this is a telescope class that implements DFM Galil TCS
@@ -174,19 +175,19 @@ class Telescope:
         if response != None:
             return float(response[1:-1])
 
-    def set_fast_focus_rate(self, percent_of_max_rate):
-        if percent_of_max_rate < 1 or percent_of_max_rate > 100:
-            self.logger.error("PERCENT_OF_MAX_RATE (" + str(percent_of_max_rate) + \
-                              ") must be between 1 and 100; no change applied")
+    def set_fast_focus_rate(self, fraction_of_max_rate):
+        if fraction_of_max_rate < 0.01 or fraction_of_max_rate > 1:
+            self.logger.error("FRACTION_OF_MAX_RATE (" + str(fraction_of_max_rate) + \
+                              ") must be between 0.01 and 1.0; no change applied")
             return
-        self.send('#55,' + str(percent_of_max_rate) + ';', readback=False)
+        self.send('#55,' + str(fraction_of_max_rate) + ';', readback=False)
         
-    def set_slow_focus_rate(self, percent_of_max_rate):
-        if percent_of_max_rate < 1 or percent_of_max_rate > 100:
-            self.logger.error("PERCENT_OF_MAX_RATE (" + str(percent_of_max_rate) + \
-                              ") must be between 1 and 100; no change applied")
+    def set_slow_focus_rate(self, fraction_of_max_rate):
+        if fraction_of_max_rate < 0.01 or fraction_of_max_rate > 1:
+            self.logger.error("FRACTION_OF_MAX_RATE (" + str(fraction_of_max_rate) + \
+                              ") must be between 0.01 and 1; no change applied")
             return
-        self.send('#54,' + str(percent_of_max_rate) + ';', readback=False)
+        self.send('#54,' + str(fraction_of_max_rate) + ';', readback=False)
 
     def initialize_focus_encoder(self):
         self.send('#37;', readback=False)
@@ -319,7 +320,7 @@ class Telescope:
         self.send('#3,' + str(rahrs) + ',' + str(decdeg) + ',' + str(equinox) + ';', readback=False)
 
     
-    def set_target_object(rahrs, decdeg, equinox=2000.0):
+    def set_target_object(self, rahrs, decdeg, equinox=2000.0):
         if rahrs < 0 or rahrs > 24:
             self.logger.error("Supplied RAHRS (" + str(rahrs) +
                               ") not allowed; 0 <= RA <= 24")
@@ -402,6 +403,7 @@ class Telescope:
                               1 (on)")
             return False            
         self.logger.info("Applying cos(dec)")
+
         self.send('#18' + str(on) + ';', readback=False)
 
     def use_rate_corrections(self, on):
@@ -596,61 +598,131 @@ class Telescope:
             
     ################## END MOUNT COMMANDS ###################
 
+def threaded_status(telescope):
+    for i in range(1000):
+        status = telescope.read_tcs_status()
+
+def threaded_domepos(telescope):
+    for i in range(1000):
+        domepos = telescope.read_dome_azimuth()
+
+def threaded_coords(telescope):
+    for i in range(1000):
+        coords = telescope.read_mount_coordinates()
+
+        
         
 if __name__ == '__main__':
 
+    # this should work on the 60" or Tierras
     if socket.gethostname() == 'tres-guider':
         base_directory = '/home/tres/tres-guider/'
+        config_file = 'telescope.ini'
     elif socket.gethostname() == 'Jason-THINK':
         base_directory = 'C:/tres-guider/'
     elif socket.gethostname() == 'flwo60':
         base_directory = '/home/observer/tres-guider/'
+        config_file = 'telescope.ini'
+    elif socket.gethostname() == 'tierras':
+        base_directory = '/home/observer/tres-guider/'
+        config_file = 'tierras.ini'
     else:
         print('unsupported system')
         sys.exit()
 
-    config_file = 'telescope.ini'
     telescope = Telescope(base_directory, config_file)
 
-    t0 = datetime.datetime.utcnow()
+    for i in range(1000):
+        status = telescope.read_tcs_status()
+        #print(status['mount_in_chase_target_mode'])
+        #print(status['mount_in_hold_position_mode'])
+        print(str(i))
+
+    ipdb.set_trace()
+
+    
     status = telescope.read_tcs_status()
-    print((datetime.datetime.utcnow() - t0).total_seconds())
-    if status['target_out_of_range']:
-        print('target out of range')
+    print(status['mount_in_chase_target_mode'])
+    #print(status['mount_in_hold_position_mode'])
+    #print(str(i))
+
+    while True:
+        coords = {}
+        t0 = datetime.datetime.utcnow()
+        while len(coords) == 0:
+            coords = telescope.read_mount_coordinates()
+            time.sleep(1.0)
+            
+        telescope.logger.info('HA = ' + str(coords['HA']))
+        telescope.logger.info('RA = ' + str(coords['RA']))
+        telescope.logger.info('Dec = ' + str(coords['Dec']))
+        telescope.logger.info('zenith distance = ' + str(coords['zenith_distance']))
+        sleepseconds = 30.0 - (datetime.datetime.utcnow() - t0).total_seconds()
+        if sleepseconds > 0: time.sleep(sleepseconds)
+        
+    ipdb.set_trace()
+        
+
+
+
+
+    
+#    t0 = datetime.datetime.utcnow()
+#    status = telescope.read_tcs_status()
+#    print((datetime.datetime.utcnow() - t0).total_seconds())
+#    if status['target_out_of_range']:
+#        print('target out of range')
 
 
     # set the target to zenith
 #    telescope.set_target_object_to_zenith()
-    ipdb.set_trace()
     
     # change to chase target mode
 #    telescope.set_mount_mode(3)
 
-    for i in range(100):
-        time.sleep(1.5)
-        status = telescope.read_tcs_status()
-        print(status['mount_in_chase_target_mode'])
-        print(status['mount_in_hold_position_mode'])
-        print()
-
-    ipdb.set_trace()
-
-        
-    coords1 = telescope.read_mount_coordinates()
+    coords1 = {}
+    while len(coords1) == 0:
+        coords1 = telescope.read_mount_coordinates()
+        time.sleep(1.0)
     print("coords before slew")
     print(coords1)
 
     east = 0.0
-    north = 100.0
+    north = -100.0
     response = telescope.offset_target_object(east,north)
 
-    coords2 = telescope.read_mount_coordinates()
+    time.sleep(10)
+    coords2 = {}
+    while len(coords2) == 0:
+        coords2 = telescope.read_mount_coordinates()
+        time.sleep(1.0)
     print()
     print("coords after slew")
     print(coords2)
 
+    ipdb.set_trace()
+
+
     # if status queries fail, reboot TCSGalil, then reinitialize telescope
     # sending rapid fire commands seems to tank server (no more than 1 per second)
+    
+
+#    rahrs = 15.0
+#    decdeg = 31.0
+#    telescope.set_target_object(rahrs, decdeg)
+
+    
+    status_thread = threading.Thread(target=threaded_status, args=(telescope,))
+    status_thread.start()
+    dome_thread = threading.Thread(target=threaded_domepos, args=(telescope,))
+    dome_thread.start()
+    coords_thread = threading.Thread(target=threaded_coords, args=(telescope,))
+    coords_thread.start()
+
+        
+
+
+        
     
     ipdb.set_trace()
 
