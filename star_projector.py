@@ -6,12 +6,14 @@
 
 # py -3 -m pip install --user zaber.serial
 from zaber.serial import BinarySerial, BinaryCommand, BinaryDevice
+#https://www.zaber.com/wiki/Software/Zaber_Console/Python
 
 from configobj import ConfigObj
 import utils
 import socket, sys, os
 import ipdb
-#https://www.zaber.com/wiki/Software/Zaber_Console/Python
+
+import threading
 
 class star_projector:
 
@@ -41,6 +43,9 @@ class star_projector:
         self.deg_per_step = float(config['DEG_PER_STEP'])
         self.arcsec_per_mm_x = float(config['ARCSEC_PER_MM_X'])
         self.arcsec_per_mm_y = float(config['ARCSEC_PER_MM_Y'])
+
+        self.theta = float(config['THETA'])
+        self.flip = (config['FLIP'] == 'True')
 
         # in mm
         self.min_x = float(config['MIN_X'])
@@ -178,6 +183,79 @@ class star_projector:
         #self.x_axis.get_max_speed(unit = Units.NATIVE)
         #self.y_axis.stop()
 
+
+    '''
+        Impose an asycronous drift with a random jitter imposed on top
+    '''
+    def jitter_drift(self, jitter, drift_x=0.0, drift_y=0.0, mm=False):
+
+        while True:
+            if mm:
+                x_vel = int(round(np.random.normal(drift_x, jitter)/self.mm_per_step_x))
+                y_vel = int(round(np.random.normal(drift_y, jitter)/self.mm_per_step_y))
+            else:
+                x_vel = int(round(np.random.normal(drift_x,jitter)/self.arcsec_per_step_x))
+                y_vel = int(round(np.random.normal(drift_y,jitter)/self.arcsec_per_step_y))
+
+            self.x_axis.move_vel(x_vel)
+            self.y_axis.move_vel(y_vel)
+
+            if self.queued_move_x != 0.0 or self.queued_move_y != 0.0:
+                self.move_relative(x=self.queued_move_x, y=self.queued_move_y, mm=False)
+                self.queued_move_x = 0.0
+                self.queued_move_y = 0.0
+
+    '''
+        this is meant to be run asynchronously with drift or jitter_drift
+    '''
+    def guide_xy(self, x=0.0, y=0.0, degrees=0, mm=False):
+
+        # convert to arcsec if necessary, then add to queued move
+        if mm:
+            self.queued_move_x += x/self.mm_per_step_x*self.arcsec_per_step_x
+            self.queued_move_y += y/self.mm_per_step_y*self.arcsec_per_step_y
+        else:
+            self.queued_move_x += x
+            self.queued_move_y += y
+
+
+#-------------------------------------------------------------------------------
+    # these function names emulate dfm_telescope so it can be used as a telescope replacement
+    def offset_target_object(self, east, north):
+        x = north*math.cos(self.theta*math.pi()/180.0) - east*math.sin(self.theta*math.pi()/180.0)
+        y = north*math.sin(self.theta*math.pi()/180.0) + east*math.cos(self.theta*math.pi()/180.0)
+        if self.flip: y = -y
+        guide_xy(x=x,y=y,mm=False)
+        
+    def populate_header(self,hdr):
+
+        hdr['TELESCOP'] = ("Star projector","Telescope")
+        hdr['SITELAT'] = (42.398067,"Site Latitude (deg)") # CDP
+        hdr['SITELONG'] = (-71.149436,"Site East Longitude (deg)") # CDP
+        hdr['SITEALT'] = (0.0,"Site Altitude (m)")
+        #hdr['RA'] = (ra, "Solved RA (J2000 deg)")
+        #hdr['DEC'] = (dec,"Solved Dec (J2000 deg)")
+        #hdr['ALT'] = (alt,'Telescope altitude (deg)')
+        #hdr['AZ'] = (az,'Telescope azimuth (deg E of N)')
+        #hdr['AIRMASS'] = (airmass,"airmass (plane approximation)")
+        #hdr['HOURANG'] = (hourang,"Hour angle")
+        #hdr['PMODEL'] = ('',"Pointing Model File")
+        #hdr['FOCPOS'] = (focus,"Focus Position (microns)")
+        #hdr['ROTPOS'] = (rotpos,"Mechanical rotator position (degrees)")
+        #hdr['PARANG'] = (parang,"Parallactic Angle (degrees)")
+        #hdr['SKYPA' ] = (skypa,"Position angle on the sky (degrees E of N)")
+
+        #hdr['MOONRA'] = (moonra, "Moon RA (J2000 deg)")
+        #hdr['MOONDEC'] =  (moondec, "Moon Dec (J2000 deg)")
+        #hdr['MOONPHAS'] = (moonphase, "Moon Phase (Fraction)")
+        #hdr['MOONDIST'] = (moonsep, "Distance between pointing and moon (deg)")
+    
+        pass
+
+    def get_objname(self, mask='grid'):
+        return "star_projector_mask_" + mask
+#-------------------------------------------------------------------------------
+
 if __name__ == '__main__':
 
     if socket.gethostname() == 'tres-guider':
@@ -196,7 +274,12 @@ if __name__ == '__main__':
     config_file = 'star_projector.ini'
     star_proj = star_projector(base_directory, config_file)
 
-    star_proj.drift(drift_x=-0.01,drift_y=-0.01,mm=True)
+    kwargs = {'drift_x': 0.01, 'drift_y':0.01, 'mm':True}
+    thread = threading.Thread(target=star_proj.jitter_drift,args=(0.01,),kwargs=kwargs)
+    thread.name = 'Jitter Drift'
+    thread.start()
+
+    
 
     ipdb.set_trace()
 
