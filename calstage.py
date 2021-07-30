@@ -57,8 +57,24 @@ class calstage:
             self.logger.error('Error connecting to device; check power and USB')
             sys.exit()		
 
+        ipdb.set_trace()
+            
         # enable servo and home to negative limit if necessary
-        pitools.startup(self.calstage, refmodes=('FNL'))
+#        pitools.startup(self.calstage, refmodes=('FNL'))
+
+        # enable servo and home to center if necessary
+#        pitools.startup(self.calstage, refmodes=('FRF'))
+
+
+        # enable servo and home to positive limit if necessary
+        pitools.startup(self.calstage, refmodes=('FPL'))
+
+        # this one doesn't fail (right away...)
+#        pitools.startup(self.calstage, refmodes=('POS'))
+#        pitools.startup(self.calstage, refmodes=('ATZ'))
+#        pitools.startup(self.calstage, refmodes=('RON'))
+#        pitools.startup(self.calstage)
+
         
     def allowedMove(self,position):
         if self.minpos == None:

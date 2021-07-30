@@ -65,8 +65,8 @@ class star_projector:
         
         if not self.simulate:
             self.connect()
-            self.home()
-            self.move_absolute(x=0.0, y=0.0)
+#            self.home()
+#            self.move_absolute(x=0.0, y=0.0)
 
     # Helper to check that commands succeeded.
     def check_command_succeeded(reply):
@@ -94,7 +94,6 @@ class star_projector:
         self.x_axis = BinaryDevice(self.comport,1)
         self.y_axis = BinaryDevice(self.comport,2)
         self.rot_axis = BinaryDevice(self.comport,3)
-
 
     def home(self):
         # this always times out if at the end of range
@@ -136,7 +135,6 @@ class star_projector:
 
         if x_move > self.max_x_steps or x_move < self.min_x_steps or y_move > self.max_y_steps or y_move < self.min_y_steps:
             self.logger.error("Requested move beyond bounds")
-
 
         self.x_axis.move_abs(x_move)
         self.y_axis.move_abs(y_move)
@@ -274,6 +272,12 @@ if __name__ == '__main__':
     config_file = 'star_projector.ini'
     star_proj = star_projector(base_directory, config_file)
 
+
+    ipdb.set_trace()
+
+    star_proj.move_absolute(x=0.0, y=10.0)
+
+    
     kwargs = {'drift_x': 0.01, 'drift_y':0.01, 'mm':True}
     thread = threading.Thread(target=star_proj.jitter_drift,args=(0.01,),kwargs=kwargs)
     thread.name = 'Jitter Drift'

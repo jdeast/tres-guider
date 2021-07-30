@@ -15,6 +15,7 @@ from astropy.stats import sigma_clipped_stats
 import redis
 import json
 import struct
+import pyds9
 
 class imager:
 
@@ -269,8 +270,14 @@ if __name__ == '__main__':
     config_file = 'zyla.ini'
     camera = imager(base_directory, config_file)
 
-    camera.take_image(0.2)
-    camera.save_image('test3.fits', overwrite=True)
+
+    ds9=pyds9.DS9()
+    while True:
+        camera.take_image(0.01)
+        ds9.set_np2arr(camera.image)
+    
+    camera.take_image(0.01)
+    camera.save_image('test.fits', overwrite=True)
 
     ipdb.set_trace()
 
