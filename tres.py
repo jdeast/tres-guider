@@ -1,8 +1,9 @@
+#!/usr/bin/python3
 from astropy.io import fits
 from pyAndorSDK3 import AndorSDK3
 import numpy as np
 import socket
-import os, sys
+import os, sys, time
 import utils
 from configobj import ConfigObj
 import ipdb
@@ -15,6 +16,8 @@ import math
 from guider import imager
 from calstage import calstage
 from tiptilt import tiptilt
+import redis
+import json
 
 
 class tres:
@@ -38,14 +41,24 @@ class tres:
             self.logger.error('Config file not found: (' + self.config_file + ')')
             sys.exit()
 
+        self.redis = redis.StrictRedis(host=config['REDIS_SERVER'],
+                                       port=config['REDIS_PORT'])
+        self.pub_tracking_data = self.redis.pubsub()
+        
+        self.redis.set('state','Starting')
+        self.redis.set('errors','None')
+            
         # set up the devices
         self.guider = imager(base_directory, 'zyla.ini', logger=self.logger, simulate=guider_simulate)
         self.calstage = calstage(base_directory, 'calstage.ini', logger=self.logger, simulate=calstage_simulate)
         self.tiptilt = tiptilt(base_directory, 'tiptilt.ini', logger=self.logger, simulate=tiptilt_simulate)
-
+        
         # connect the devices
         self.tiptilt.connect()
         self.calstage.connect()
+        self.redis.set('state','Initialized')
+        self.redis.publish('tracking_data',json.dumps({'timestamp':datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f') ,'x_mispointing':0.0,'y_mispointing':0.0,'north_mispointing':0.0,'east_mispointing':0.0,'dx':0.0,'dy':0.0,'north':0.0,'east':0.0,'counts':0,'fwhm':1.0,'platescale':0.0,'roi_x1':0,'roi_x2':0,'roi_y1':0,'roi_y2':0}))
+
         
     # this assumes there are is no confusion (within tolerance) and each offset is small (< tolerance)
     # annulus guiding (pick star closest to fiber and guide)                     -- done
@@ -60,6 +73,7 @@ class tres:
     # subframe - Boolean. If true, it will use a 3*tolerance subframe to guide (decrease overhead). 
     def guide(self, exptime, offset=(0.0,0.0), tolerance=3.0, simulate=False, save=False, subframe=True):
 
+        self.redis.set('state','Guiding')
         # move to the middle of the range
         self.tiptilt.move_tip_tilt(1.0,1.0)
         
@@ -159,9 +173,15 @@ class tres:
                 # convert X & Y pixel to North & East arcsec offset
                 # don't need cos(dec) term unless we send via mount
                 PA = 0.0 # get from Telescope? Config file? user?
+
+                north_mispointing = self.guider.platescale*(stars[ndx,0]*math.cos(PA) - stars[ndx,1]*math.sin(PA))
+                east_mispointing  = self.guider.platescale*(stars[ndx,0]*math.sin(PA) + stars[ndx,1]*math.cos(PA))
+                
                 north = self.guider.platescale*(dx*math.cos(PA) - dy*math.sin(PA))
                 east  = self.guider.platescale*(dx*math.sin(PA) + dy*math.cos(PA))
 
+                self.redis.publish('tracking_data',json.dumps({'timestamp':datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f'),'x_mispointing':stars[ndx,0],'y_mispointing':stars[ndx,1],'north_mispointing':north_mispointing,'east_mispointing':east_mispointing,'dx':dx,'dy':dy,'north':north,'east':east,'counts':stars[ndx,2],'fwhm':1.0+np.random.uniform(low=-0.1,high=0.1),'platescale':self.guider.platescale,'roi_x1':x1,'roi_x2':x2,'roi_y1':y1,'roi_y2':y2}))
+                
                 # TODO: make sure the move is within range
                 move_in_range = True
                 
@@ -299,7 +319,7 @@ class tres:
         guide_thread.name = 'guide_thread'
         guide_thread.start()
 
-        time.sleep(60)
+        time.sleep(600)
 
         self.logger.info("Done guiding")
         self.guider.guiding=False
@@ -319,9 +339,9 @@ if __name__ == '__main__':
         sys.exit()
 
     config_file = 'tres.ini'
-    tres = tres(base_directory, config_file, calstage_simulate=True, tiptilt_simulate=False)
+    tres = tres(base_directory, config_file, calstage_simulate=True, tiptilt_simulate=True,guider_simulate=True)
     
-    tres.test_guide_loop(simulate=False, save=False, exptime=0.01)
+    tres.test_guide_loop(simulate=True, save=False, exptime=1.0)
     
     ipdb.set_trace()
 

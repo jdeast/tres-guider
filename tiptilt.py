@@ -7,6 +7,9 @@ import sys, os
 import logging
 import utils
 import numpy as np
+import argparse
+import time
+import redis
 
 class tiptilt:
 
@@ -28,6 +31,9 @@ class tiptilt:
             self.logger.error('Config file not found: (' + self.config_file + ')')
             sys.exit()
 
+        self.redis = redis.Redis(host=config['REDIS_SERVER'],
+                                 port=config['REDIS_PORT'])
+            
         # serial number of the TIP/TILT stage and controller
         self.sn = config['SN_TIPTILT']
         self.model = config['MODEL_TIPTILT']
@@ -133,6 +139,9 @@ class tiptilt:
         self.position['A'] = tip
         self.position['B'] = tilt
 
+        self.redis.set('tip',tip)
+        self.redis.set('tilt',tilt)
+        
         # wait for move?
         
         # make sure it moved where we wanted
@@ -175,6 +184,15 @@ class tiptilt:
 
 if __name__ == '__main__':
 
+
+    parser = argparse.ArgumentParser(description='Control the tip/tilt stage for the TRES front end')
+    parser.add_argument('--home'  , dest='home'  , action='store_true', default=False, help='Move the tip/tilt stage to the center of motion')
+    parser.add_argument('--move1'  , dest='move1'  , action='store_true', default=False, help='Move the tip/tilt stage to the (0,0) extreme')
+    parser.add_argument('--move2'  , dest='move2'  , action='store_true', default=False, help='Move the tip/tilt stage to the (0,2) extreme')
+    parser.add_argument('--move3'  , dest='move3'  , action='store_true', default=False, help='Move the tip/tilt stage to the (2,2) extreme')
+    parser.add_argument('--move4'  , dest='move4'  , action='store_true', default=False, help='Move the tip/tilt stage to the (2,0) extreme')
+    opt = parser.parse_args()
+    
     if socket.gethostname() == 'tres-guider':
         base_directory = '/home/tres/tres-guider'
     else:
@@ -185,11 +203,28 @@ if __name__ == '__main__':
     tiptilt = tiptilt(base_directory, config_file)
 
     tiptilt.connect()
-    tiptilt.move_tip_tilt(0.2,0.2)
-    print(tiptilt.get_position())
 
-    tiptilt.move_tip_tilt(0.0,0.0)
-    print(tiptilt.get_position())
+    if opt.home:
+        tiptilt.move_tip_tilt(1.0,1.0)
+        time.sleep(5)
+        tiptilt.move_tip_tilt(0.0,0.0)
+        time.sleep(5)
+        tiptilt.move_tip_tilt(2.0,2.0)
+        time.sleep(5)
+        tiptilt.move_tip_tilt(1.0,1.0)
+    elif opt.move1:
+        tiptilt.move_tip_tilt(0.0,0.0)
+    elif opt.move2:
+        tiptilt.move_tip_tilt(0.0,2.0)
+    elif opt.move3:
+        tiptilt.move_tip_tilt(2.0,2.0)
+    elif opt.move4:
+        tiptilt.move_tip_tilt(2.0,0.0)
+
+#    print(tiptilt.get_position())
+
+#    tiptilt.move_tip_tilt(0.0,0.0)
+#    print(tiptilt.get_position())
 
     ipdb.set_trace()
 

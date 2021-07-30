@@ -50,34 +50,16 @@ class calstage:
         if self.simulate:
             time.sleep(1.0)
             return
-        
-        usbdevices = self.calstage.EnumerateUSB()
 
-        found = False
-        if len(usbdevices) == 0:
-            self.logger.error("No PI devices found")
-            sys.exit()
-            
-        for device in usbdevices:
-            if self.sn_controller in device:
-                found = True
-        if not found:
-            self.logger.error('Serial number in ' + self.config_file + ' (' + self.sn_controller + ') does not match any of the connected USB devices; check power and USB')
-            for device in usbdevices:
-                self.logger.info(str(device) + ' is connected')
-            sys.exit()		
 
-        self.calstage.ConnectUSB(serialnum=self.sn_controller)
+        junk = self.calstage.ConnectRS232("/dev/ttyUSB0",115200)
         if not self.calstage.IsConnected():
-            self.logger.error('Error connecting to device')
+            self.logger.error('Error connecting to device; check power and USB')
+            sys.exit()		
 
         # enable servo and home to negative limit if necessary
         pitools.startup(self.calstage, refmodes=('FNL'))
         
-        # enable servo home to center if necessary
-        #pitools.startup(self.calstage, refmodes=('FRF')) 
-
-
     def allowedMove(self,position):
         if self.minpos == None:
             if self.simulate: self.minpos = 0.0
@@ -169,8 +151,10 @@ if __name__ == '__main__':
     config_file = 'calstage.ini'
     calstage = calstage(base_directory, config_file)
 
-    ipdb.set_trace()
     calstage.connect()
+
+    ipdb.set_trace()
+
     calstage.move_to_science()
     calstage.move_to_sky()
     calstage.move_to_out()

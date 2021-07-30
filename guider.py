@@ -12,6 +12,9 @@ import logging
 import datetime
 from photutils import DAOStarFinder
 from astropy.stats import sigma_clipped_stats
+import redis
+import json
+import struct
 
 class imager:
 
@@ -34,6 +37,9 @@ class imager:
             self.logger.error('Config file not found: (' + self.config_file + ')')
             sys.exit()
 
+        self.redis = redis.Redis(host=config['REDIS_SERVER'],
+                                 port=config['REDIS_PORT'])            
+            
         self.platescale = float(config['PLATESCALE'])
         self.gain = float(config['GAIN'])
         self.model = config['MODEL']
@@ -43,8 +49,8 @@ class imager:
         self.y_science_fiber = float(config['YSCIFIB'])
         self.x_sky_fiber = None
         self.y_sky_fiber = None
-        self.dateobs = None
-        self.exptime = None
+        self.dateobs = ''
+        self.exptime = 0.0
         self.guidestatus = None
         self.x1 = 1
         self.x2 = 2048
@@ -55,6 +61,19 @@ class imager:
         self.guiding = False
         self.simulate=simulate
 
+        self.redis.set('gain',self.gain)
+        self.redis.set('x_science_fiber',self.x_science_fiber)
+        self.redis.set('y_science_fiber',self.y_science_fiber)
+        self.redis.set('dateobs',self.dateobs)
+        self.redis.set('exptime',self.exptime)
+        self.redis.set('x1',self.x1)
+        self.redis.set('x2',self.x2)
+        self.redis.set('y1',self.y1)
+        self.redis.set('y2',self.y2)
+        self.redis.set('xbin',self.xbin)
+        self.redis.set('ybin',self.ybin)
+        self.redis.set('guiding',str(self.guiding))
+        
         # servo parameters
         self.KPx = float(config['KPx'])
         self.KIx = float(config['KIx'])
@@ -65,6 +84,16 @@ class imager:
         self.Imax = float(config['Imax'])
         self.Dband = float(config['Dband'])
         self.Corr_max = float(config['Corr_max'])
+
+        self.redis.set('KPx',self.KPx)
+        self.redis.set('KIx',self.KIx)
+        self.redis.set('KDx',self.KDx)
+        self.redis.set('KPy',self.KPy)
+        self.redis.set('KIy',self.KIy)
+        self.redis.set('KDy',self.KDy)        
+        self.redis.set('Imax',self.Imax)
+        self.redis.set('Dband',self.Dband)
+        self.redis.set('Corr_max',self.Corr_max)
         
         if not self.simulate:
             sdk3 = AndorSDK3()
@@ -83,6 +112,8 @@ class imager:
     def simulate_star_image(self,x,y,flux,fwhm,background=300.0,noise=0.0):
 
         self.dateobs = datetime.datetime.utcnow()
+        self.redis.set('dateobs',self.dateobs.strftime('%Y-%m-%dT%H:%M:%S.%f'))
+        
 
         xwidth = self.x2-self.x1
         ywidth = self.y2-self.y1
@@ -148,13 +179,21 @@ class imager:
                 
         # now convert to 16 bit int
         self.image = self.image.astype(np.int16)
+        h, w = self.image.shape
+        shape = struct.pack('>II',h,w)
+        encoded_img = shape + self.image.tobytes()
+        self.redis.publish('guider_image',encoded_img)
 
     # this currently has ~0.5s of overhead
     def take_image(self, exptime):
 
         self.exptime = exptime
+        self.redis.set('exptime',self.exptime)
+        
         self.imager.ExposureTime = self.exptime
         self.dateobs = datetime.datetime.utcnow()
+        self.redis.set('dateobs',self.dateobs.strftime('%Y-%m-%dT%H:%M:%S.%f'))
+        
         t0 = datetime.datetime.utcnow()
         self.image = (self.imager.acquire(timeout=20000).image.astype(np.int16))[self.y1:self.y2,self.x1:self.x2]
         self.logger.info("image done in " + str((datetime.datetime.utcnow() - t0).total_seconds()))
@@ -192,6 +231,10 @@ class imager:
         self.y1 = y1
         self.x2 = x2
         self.y2 = y2
+        self.redis.set('x1',self.x1)
+        self.redis.set('x2',self.x2)
+        self.redis.set('y1',self.y1)
+        self.redis.set('y2',self.y2)
 
     def get_stars(self):
 
