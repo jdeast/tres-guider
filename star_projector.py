@@ -12,7 +12,7 @@ from configobj import ConfigObj
 import utils
 import socket, sys, os
 import ipdb
-
+import pdu
 import threading
 
 class star_projector:
@@ -271,8 +271,10 @@ if __name__ == '__main__':
 
     config_file = 'star_projector.ini'
     star_proj = star_projector(base_directory, config_file)
-
-
+    apc = pdu.pdu(base_directory, 'pdu.ini')
+    if not apc.starprojector.status():
+        apc.starprojector.on()
+    
     ipdb.set_trace()
 
     star_proj.move_absolute(x=0.0, y=10.0)

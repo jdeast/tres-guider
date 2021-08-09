@@ -40,10 +40,33 @@ class calstage:
         self.maxpos = None
         self.simulate = simulate
         self.simulated_position = 0.0
+        self.port = config['PORT']
         
         # use the PI python library to initialize the device
         if not self.simulate: self.calstage = GCSDevice()
 
+
+    def connect_direct(self):
+        self.serial = serial.Serial(self.port)
+        return self.serial.is_open()
+
+    def send(self, cmd):
+        if self.serial.is_open():
+            pass
+        self.serial.write(cmd)
+        
+    def get_position(self):
+        return self.send('POS?')
+
+    def get_id(self):
+        return self.send('*IDN?')
+
+    def ref_to_positive_limit(self):
+        return self.send('FPL')
+
+    def ref_to_negative_limit(self):
+        return self.send('FNL')
+    
     def connect(self):
 
         # if simulating, just wait a second and return
@@ -57,7 +80,9 @@ class calstage:
             self.logger.error('Error connecting to device; check power and USB')
             sys.exit()		
 
-        ipdb.set_trace()
+        self.calstage.SVO('1',1)
+            
+#        ipdb.set_trace()
             
         # enable servo and home to negative limit if necessary
 #        pitools.startup(self.calstage, refmodes=('FNL'))
@@ -67,7 +92,7 @@ class calstage:
 
 
         # enable servo and home to positive limit if necessary
-        pitools.startup(self.calstage, refmodes=('FPL'))
+#        pitools.startup(self.calstage, refmodes=('FPL'))
 
         # this one doesn't fail (right away...)
 #        pitools.startup(self.calstage, refmodes=('POS'))

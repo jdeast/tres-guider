@@ -64,7 +64,8 @@ class Telescope:
             return None
             
         self.logger.info("Sending command: " + cmd)
-        s.send(cmd +'\r')
+        #s.send(cmd +'\r')
+        s.send(cmd.encode('utf-8'))
 
         if not readback: return None       
         
@@ -73,7 +74,8 @@ class Telescope:
         time_elapsed = 0.0
         while True and time_elapsed < timeout:
             time_elapsed = (datetime.datetime.utcnow()-t0).total_seconds()
-            data += s.recv(1024)
+            #data += s.recv(1024)
+            data += (s.recv(1024)).decode('utf-8')
             if data[-1] == ';': break
 
         self.logger.info("Closing connection")

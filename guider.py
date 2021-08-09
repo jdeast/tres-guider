@@ -16,6 +16,8 @@ import redis
 import json
 import struct
 import pyds9
+import pdu
+import centroid
 
 class imager:
 
@@ -270,15 +272,22 @@ if __name__ == '__main__':
     config_file = 'zyla.ini'
     camera = imager(base_directory, config_file)
 
-
+    # turn on the star projector
+    apc = pdu.pdu(base_directory, 'pdu.ini')
+    if not apc.starprojector.status():
+        apc.starprojector.on()
+    
     ds9=pyds9.DS9()
     while True:
-        camera.take_image(0.01)
+        camera.take_image(0.02)
         ds9.set_np2arr(camera.image)
-    
-    camera.take_image(0.01)
-    camera.save_image('test.fits', overwrite=True)
-
+        stars_cv = centroid.get_stars_cv(camera.image)
+        
+    camera.take_image(0.02)
+    camera.save_image('star_projector_20210809.fits', overwrite=True)
+    stars_sep = centroid.get_stars_sep(camera.image)
+    sort_stars = stars_sep[(-stars_sep[:,2]).argsort()]
+                               
     ipdb.set_trace()
 
 

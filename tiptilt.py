@@ -10,6 +10,7 @@ import numpy as np
 import argparse
 import time
 import redis
+import pyserial
 
 class tiptilt:
 
@@ -74,6 +75,11 @@ class tiptilt:
             self.mintilt = self.tiptilt.qTMN()['B']
             self.maxtilt = self.tiptilt.qTMX()['B']
 
+    # bypass the pipython library and talk directly to the device
+    def connect_direct(self):
+#        self.serial = 
+        pass
+            
     def connect(self):
 
         if self.simulate:

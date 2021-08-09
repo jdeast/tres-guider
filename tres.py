@@ -16,6 +16,7 @@ import math
 from guider import imager
 from calstage import calstage
 from tiptilt import tiptilt
+from pdu import pdu
 import redis
 import json
 
