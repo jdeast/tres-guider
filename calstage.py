@@ -7,6 +7,7 @@ import sys, os
 import utils
 import logging
 import time
+import pdu
 
 class calstage:
 
@@ -41,32 +42,24 @@ class calstage:
         self.simulate = simulate
         self.simulated_position = 0.0
         self.port = config['PORT']
-        
+        self.pdu = pdu.pdu(self.base_directory, 'pdu.ini')
+
         # use the PI python library to initialize the device
-        if not self.simulate: self.calstage = GCSDevice()
+        if not self.simulate: self.calstage = GCSDevice()       
 
+    def power_on(self):
+        if not self.pdu.calstage.status():
+            self.pdu.calstage.on()
 
-    def connect_direct(self):
-        self.serial = serial.Serial(self.port)
-        return self.serial.is_open()
+    def power_off(self):
+        if self.pdu.calstage.status():
+            self.pdu.calstage.off()
+            
+    def power_cycle(self,offtime=30):
+        self.power_off()
+        time.sleep(offtime)
+        self.power_on()
 
-    def send(self, cmd):
-        if self.serial.is_open():
-            pass
-        self.serial.write(cmd)
-        
-    def get_position(self):
-        return self.send('POS?')
-
-    def get_id(self):
-        return self.send('*IDN?')
-
-    def ref_to_positive_limit(self):
-        return self.send('FPL')
-
-    def ref_to_negative_limit(self):
-        return self.send('FNL')
-    
     def connect(self):
 
         # if simulating, just wait a second and return
@@ -74,13 +67,12 @@ class calstage:
             time.sleep(1.0)
             return
 
-
-        junk = self.calstage.ConnectRS232("/dev/ttyUSB0",115200)
+        junk = self.calstage.ConnectRS232(self.port,115200)
         if not self.calstage.IsConnected():
             self.logger.error('Error connecting to device; check power and USB')
             sys.exit()		
 
-        self.calstage.SVO('1',1)
+#        self.calstage.SVO('1',1)
             
 #        ipdb.set_trace()
             
@@ -88,7 +80,7 @@ class calstage:
 #        pitools.startup(self.calstage, refmodes=('FNL'))
 
         # enable servo and home to center if necessary
-#        pitools.startup(self.calstage, refmodes=('FRF'))
+        pitools.startup(self.calstage, refmodes=('FRF'))
 
 
         # enable servo and home to positive limit if necessary
@@ -192,11 +184,16 @@ if __name__ == '__main__':
     config_file = 'calstage.ini'
     calstage = calstage(base_directory, config_file)
 
-    calstage.connect()
-
     ipdb.set_trace()
 
+    
+    calstage.connect()
+
+
+    
     calstage.move_to_science()
+
+    
     calstage.move_to_sky()
     calstage.move_to_out()
 

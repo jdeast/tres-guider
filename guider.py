@@ -281,7 +281,7 @@ if __name__ == '__main__':
     while True:
         camera.take_image(0.02)
         ds9.set_np2arr(camera.image)
-        stars_cv = centroid.get_stars_cv(camera.image)
+#        stars_cv = centroid.get_stars_cv(camera.image)
         
     camera.take_image(0.02)
     camera.save_image('star_projector_20210809.fits', overwrite=True)
