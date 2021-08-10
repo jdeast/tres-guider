@@ -19,8 +19,8 @@ import cv2
 import dfm_telescope as telescope
 
 import simulated_cam
-import asi_cam
-#import andor_cam
+#import asi_cam
+import andor_cam
 #import adimec_q4a180
 
 import utils
@@ -244,8 +244,8 @@ class GuidingSystem():
 
         
         # Position of sky reference fiber with respect to on-axis in arcsec
-        self.sky_fiber_x = float(config['SKY_FIBER_X'])
-        self.sky_fiber_y = float(config['SKY_FIBER_Y'])
+        self.sky_fiber_x = float(config['SKY_FIBER_X'])/self.guider_magnification
+        self.sky_fiber_y = float(config['SKY_FIBER_Y'])/self.guider_magnification
         
         # Diameter of sky refernce fiber bucket in arcsec                
         self.sky_fiber_xwidth = float(config['SKY_FIBER_XWIDTH'])
@@ -268,7 +268,8 @@ class GuidingSystem():
         self.command_tree = {'loop_state':self.set_loop_state,
                              'framing':self.set_framing_state,
                              'toggle_framing':self.toggle_framing_state,
-                             'roi':self.set_roi}
+                             'roi':self.set_roi,
+                             'exposure_time':self.set_exposure_time}
         
         # Start in open loop
         self.framing = True
@@ -315,7 +316,7 @@ class GuidingSystem():
                                                      'adimec_cam.ini',
                                                      new_image_callback=\
                                                      self.new_image_callback)
-        elif self.cam_type == 'zyla':
+        elif self.cam_type == 'andor':
             self.cam = andor_cam.AndorGuiderCam(base_directory,'zyla.ini',
                                                 new_image_callback=\
                                                 self.new_image_callback)
@@ -603,6 +604,11 @@ class GuidingSystem():
         
         return(0)
 
+#-------------------------------------------------------------------------------
+    def set_exposure_time(self,param):
+        print("Setting exposure time to:");
+        print(param)
+        self.cam.set_exposure_time(param)
     
 #-------------------------------------------------------------------------------
     def command_callback(self,command_dict):
@@ -787,6 +793,7 @@ class GuidingSystem():
                         'camera_ycenter_pix':self.camera_ycenter_pix,
                         'pixel_size_um':self.pixel_size_um,
                         'arcsec_per_um_guider_ccd':self.arcsec_per_um_guider_ccd,
+                        'exposure_time':self.cam.get_exposure_time(),
                         'stars':self.stars.tolist(),
                         'image':self.image.tolist()})
 
@@ -810,7 +817,7 @@ if __name__ == "__main__":
     base_directory = "./"
     
     guider = GuidingSystem(base_directory,
-                           cam_type='asi',
+                           cam_type='andor',
                            tiptilt_type='simulated',
                            calstage_type='simulated')
     guider.start()

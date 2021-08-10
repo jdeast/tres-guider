@@ -73,7 +73,7 @@ class AndorGuiderCam(threading.Thread):
         self.model = config['MODEL']
         self.sn = config['SN']
         
-        #self.imager.SensorCooling = True
+        self.imager.SensorCooling = True
         print("Current sensor temperature is %f" %
               (self.imager.SensorTemperature,))
         print(self.imager.TemperatureStatus)
@@ -91,10 +91,10 @@ class AndorGuiderCam(threading.Thread):
 
         self.set_roi(self.x1,self.y1,self.x2,self.y2)
         self.logger.info("Setting frame rate to 0.5 Hz")
-        self.set_frame_period(2.0)
+        self.set_frame_period(1.0)
         self.set_gain(1.0)
         self.logger.info("Setting exposure time to max for 0.5 Hz framerate")
-        self.set_exposure_time(2.0)
+        self.set_exposure_time(1.0)
 
         # Hardcoded here.  Should match values in tres_guider.ini
         # These don't belong here since they are optics and system related but
@@ -110,9 +110,9 @@ class AndorGuiderCam(threading.Thread):
         # Create three simulated stars
         self.star_xpositions = [0.0,-30.0,0.0]   # arcsec from center
         self.star_ypositions = [0.0,-30.0,-30.0] # arcsec from center
-        self.star_fluxes = [1e6,0.5e6,1.5e6]
+        self.star_fluxes = [1e5,0.5e5,1.5e5]
         self.star_fwhm = 1.0
-        self.noise = 2.0
+        self.noise = 0.0
         self.background = 0
         self.jitter_amplitude = 0.0 # Amplitude to inject into integrator "
         self.jitter_gain = 0.0      # Gain term of integrator
@@ -143,6 +143,7 @@ class AndorGuiderCam(threading.Thread):
 #-------------------------------------------------------------------------------
     def __del__(self):
         """Close camera and free resources"""
+        self.imager.SensorCooling = False
         pass
 
 
@@ -449,22 +450,23 @@ class AndorGuiderCam(threading.Thread):
         cam_image = self.imager.acquire(timeout=(self.exposure_time*1000) +
                                         1000).image.astype(np.int16)
 
-        sim_star_img = self.simulate_star_image(self.star_xpositions,
-                                                self.star_ypositions,
-                                                self.star_fluxes,
-                                                self.star_fwhm,
-                                                noise=self.noise,
-                                                background=self.background,
-                                                jitter=self.jitter_amplitude)
-        sim_star_roi = sim_star_img[self.y1:self.y2,self.x1:self.x2] 
-        if (cam_image.shape != sim_star_roi.shape):
-                    print("Mismatch between camera frame and current ROI")
-                    print(roi.shape)
-                    print(star_roi.shape)
-                    continue
+        # sim_star_img = self.simulate_star_image(self.star_xpositions,
+        #                                         self.star_ypositions,
+        #                                         self.star_fluxes,
+        #                                         self.star_fwhm,
+        #                                         noise=self.noise,
+        #                                         background=self.background,
+        #                                         jitter=self.jitter_amplitude)
+        # sim_star_roi = sim_star_img[self.y1:self.y2,self.x1:self.x2] 
+        # if (cam_image.shape != sim_star_roi.shape):
+        #     print("Mismatch between camera frame and current ROI")
+        #     print(cam_image.shape)
+        #     print(sim_star_roi.shape)
+        #     return
         
-        roi = cam_image * self.hole_mask[self.y1:self.y2,self.x1:self.x2] \
-              + sim_star_roi
+        roi = cam_image
+        #* self.hole_mask[self.y1:self.y2,self.x1:self.x2]  \
+        #              + sim_star_roi
         self.dateobs = datetime.datetime.utcnow()
             
         if (self.new_image_callback != None):

@@ -111,6 +111,7 @@ class TresGUI(QWidget):
         #         self.replott()
 
         self.plot_tilt_cnt = -1
+        self.exposure_time = 0
 
 #        self.ds9 = pyds9.DS9('TRES Guider')
 #        self.ds9.set('zoom to fit')
@@ -313,8 +314,14 @@ class TresGUI(QWidget):
 #         self.gdrtax.axhline(-3.0, 0, 1, color = 'y')
         self.ui.azelMplwidget.draw()
 #        print('leaving replot_tilts')
-            
- #------------------------------------------------------------------------------
+
+#------------------------------------------------------------------------------
+    def update_gui(self):
+#        print("Received guider data");
+        print(self.exposure_time)
+        self.ui.exptime1Edit.setText(str(round(float(self.exposure_time),6)))
+        
+#------------------------------------------------------------------------------
     def on_guider_data(self,new_data):
 #        print("Received guider data");
         ts = new_data['timestamp']
@@ -337,7 +344,8 @@ class TresGUI(QWidget):
         self.roi_ydim = self.roi_y2 - self.roi_y1 + 1
         self.roi_xcenter = self.roi_xdim/2
         self.roi_ycenter = self.roi_ydim/2
-
+        self.exposure_time = new_data['exposure_time']
+        
         self.region_xcen = self.roi_xcenter - new_data['x_mispointing']/self.platescale
         self.region_ycen = self.roi_ycenter - new_data['y_mispointing']/self.platescale
         self.region_radius = new_data['fwhm']/self.platescale
@@ -348,6 +356,7 @@ class TresGUI(QWidget):
         self.replot_tilts()
         self.replot_focus()
         self.replot_counts()
+        self.update_gui()
 
 #        print("Received image data");
 #        h,w = struct.unpack('>II',new_data[:8])
@@ -384,6 +393,12 @@ class TresGUI(QWidget):
 #-------------------------------------------------------------------------------
     def on_set_offsets(self):
         pass
+
+#-------------------------------------------------------------------------------
+    def on_set_exptime(self,checked):
+        print("In on_set_exptime")        
+        new_exptime = self.ui.exptime1SpinBox.value()
+        res = self.command_sender.send({'exposure_time':new_exptime})        
 
 #-------------------------------------------------------------------------------
     def on_standby(self):
@@ -435,6 +450,11 @@ class TresGUI(QWidget):
             res = self.command_sender.send({'framing':1})
             print("Starting camera framing")
 
+#-------------------------------------------------------------------------------
+    def on_exposure_time_changed(self,sval):
+        print("Got message that exposure time changed")
+        self.ui.exptime1Edit.setText(str(round(float(sval),6)))
+            
 #-------------------------------------------------------------------------------
     def on_framing_changed(self,sval):
         print("Got message that framing state changed")

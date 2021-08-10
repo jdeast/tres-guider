@@ -65,8 +65,8 @@ class SimulatedGuiderCam(threading.Thread):
         self.logger.info("Setting frame rate to 10Hz")
         self.set_frame_period(1.0)
         self.set_gain(1.0)
-        self.logger.info("Setting exposure time to max for 10Hz framerate")
-        self.set_exposure_time(0.1)
+        self.logger.info("Setting exposure time to for 1Hz framerate")
+        self.set_exposure_time(1.0)
         self.xdata = []
         self.ydata = []
 
@@ -222,7 +222,8 @@ class SimulatedGuiderCam(threading.Thread):
         frame period as dicated by the camera timing
         """
         
-        self.exposure_time = seconds        
+        self.exposure_time = seconds
+        self.set_frame_period(seconds)
 
 #-------------------------------------------------------------------------------
     def get_exposure_time(self):

@@ -138,10 +138,10 @@ class TresDisplay():
                                            self.roi_x2,self.roi_y2]})
 
         if event == cv2.EVENT_RBUTTONDOWN:
-            self.roi_x1 = self.camera_xdim_pix/2 - 128
-            self.roi_x2 = self.camera_xdim_pix/2 + 128
-            self.roi_y1 = self.camera_ydim_pix/2 - 128
-            self.roi_y2 = self.camera_ydim_pix/2 + 128
+            self.roi_x1 = 0 #self.camera_xdim_pix/2 - 128
+            self.roi_x2 = self.camera_xdim_pix #self.camera_xdim_pix/2 + 128
+            self.roi_y1 = 0 #self.camera_ydim_pix/2 - 128
+            self.roi_y2 = self.camera_ydim_pix #self.camera_ydim_pix/2 + 128
 
             
             self.command_sender.send({'roi':[self.roi_x1,self.roi_y1,
