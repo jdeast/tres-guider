@@ -25,3 +25,6 @@ $RECYCLE.BIN/
 
 # emacs backup files
 *~
+
+# log files
+log/
