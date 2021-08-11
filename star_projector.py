@@ -133,6 +133,8 @@ class star_projector:
             x_move = int(round((self.min_x_steps + self.max_x_steps)/2.0 + x/self.arcsec_per_step_x))
             y_move = int(round((self.min_x_steps + self.max_x_steps)/2.0 + y/self.arcsec_per_step_y))
 
+        self.logger.info("moving " + str(x_move) + " steps in x and " + str(y_move) + " in y")
+
         if x_move > self.max_x_steps or x_move < self.min_x_steps or y_move > self.max_y_steps or y_move < self.min_y_steps:
             self.logger.error("Requested move beyond bounds")
 
@@ -276,6 +278,7 @@ if __name__ == '__main__':
         apc.starprojector.on()
     
     ipdb.set_trace()
+    
 
     star_proj.move_absolute(x=0.0, y=10.0)
 

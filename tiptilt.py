@@ -10,7 +10,7 @@ import numpy as np
 import argparse
 import time
 import redis
-import pyserial
+#import pyserial
 
 class tiptilt:
 
@@ -40,9 +40,10 @@ class tiptilt:
         self.model = config['MODEL_TIPTILT']
         self.sn_controller = config['SN_CONTROLLER']
         self.model_controller = config['MODEL_CONTROLLER']
-
+        
         # stage steps per arcsecond on the sky 
-        self.steps_per_arcsec = float(config['STEPS_PER_ARCSEC'])
+        self.steps_per_pixel_tip = float(config['STEPS_PER_PIXEL_TIP'])
+        self.steps_per_pixel_tilt = float(config['STEPS_PER_PIXEL_TILT'])
         
         # angle between North and axis A, in radians
         self.theta = float(config['THETA'])*math.pi/180.0
@@ -75,11 +76,6 @@ class tiptilt:
             self.mintilt = self.tiptilt.qTMN()['B']
             self.maxtilt = self.tiptilt.qTMX()['B']
 
-    # bypass the pipython library and talk directly to the device
-    def connect_direct(self):
-#        self.serial = 
-        pass
-            
     def connect(self):
 
         if self.simulate:
@@ -132,7 +128,7 @@ class tiptilt:
 
         # check bounds of requested move
         if tip < self.mintip or tip > self.maxtip or tilt < self.mintilt or tilt > self.maxtilt:
-            self.logger.error("Requested move out of range")
+            self.logger.error("Requested move (tip=" + str(tip) + ", tilt=" + str(tilt) + " out of range")
             return
 
         self.logger.info("moving to tip = " + str(tip) + ', tilt=' + str(tilt))
@@ -157,8 +153,29 @@ class tiptilt:
         return
 
     '''
+    Move the tip/tilt stage a specified number of
+    pixels in the X and Y direction on the guide camera
+    '''
+    def move_x_y(self, x, y):
+
+        # get current position
+        ttpos = self.get_position()
+                
+        # translate north & east (arcsec on sky) to 
+        # tip and tilt (stage steps)
+        # requires angle, magnitude, and flip
+        tip  = ttpos['A'] + self.sign*self.steps_per_pixel_tip *(x*math.cos(self.theta) - y*math.sin(self.theta))
+        tilt = ttpos['B'] +           self.steps_per_pixel_tilt*(x*math.sin(self.theta) + y*math.cos(self.theta))
+
+        print(tip, tilt)
+        
+        # move the tip/tilt
+        return self.move_tip_tilt(tip,tilt)
+
+    '''
     Move the tip/tilt stage North and East a specified number of
     arcseconds on the sky 
+    **** THETA ASSUMES XY IS ALIGNED NORTH-EAST ****
     '''
     def move_north_east(self, north, east):
 
@@ -168,8 +185,8 @@ class tiptilt:
         # translate north & east (arcsec on sky) to 
         # tip and tilt (stage steps)
         # requires angle, magnitude, and flip
-        tip  = ttpos['A'] + self.sign*self.steps_per_arcsec*(north*math.cos(self.theta) - east*math.sin(self.theta))
-        tilt = ttpos['B'] +           self.steps_per_arcsec*(north*math.sin(self.theta) + east*math.cos(self.theta))
+        tip  = ttpos['A'] + self.sign*self.steps_per_arcsec_tip *(north*math.cos(self.theta) - east*math.sin(self.theta))
+        tilt = ttpos['B'] +           self.steps_per_arcsec_tilt*(north*math.sin(self.theta) + east*math.cos(self.theta))
 
         # move the tip/tilt
         return self.move_tip_tilt(tip,tilt)

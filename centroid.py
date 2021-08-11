@@ -135,7 +135,7 @@ def get_stars_sep(image, filename=None):
     bkg = sep.Background(image0, bw=64, bh=64, fw=3, fh=3)
 #    bkg_rms = bkg.rms()
     data_sub = image0 - bkg
-    stars = sep.extract(data_sub, 1.5, err=bkg.globalrms)
+    stars = sep.extract(data_sub, 3.0, err=bkg.globalrms, minarea=100)
     return np.transpose(np.vstack((stars['x'],stars['y'],stars['flux'])))
 
 # use dao to identify stars

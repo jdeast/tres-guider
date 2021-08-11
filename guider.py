@@ -40,8 +40,8 @@ class imager:
             self.logger.error('Config file not found: (' + self.config_file + ')')
             sys.exit()
 
-        self.redis = redis.Redis(host=config['REDIS_SERVER'],
-                                 port=config['REDIS_PORT'])            
+#        self.redis = redis.Redis(host=config['REDIS_SERVER'],
+#                                 port=config['REDIS_PORT'])            
             
         self.platescale = float(config['PLATESCALE'])
         self.gain = float(config['GAIN'])
@@ -64,18 +64,18 @@ class imager:
         self.guiding = False
         self.simulate=simulate
 
-        self.redis.set('gain',self.gain)
-        self.redis.set('x_science_fiber',self.x_science_fiber)
-        self.redis.set('y_science_fiber',self.y_science_fiber)
-        self.redis.set('dateobs',self.dateobs)
-        self.redis.set('exptime',self.exptime)
-        self.redis.set('x1',self.x1)
-        self.redis.set('x2',self.x2)
-        self.redis.set('y1',self.y1)
-        self.redis.set('y2',self.y2)
-        self.redis.set('xbin',self.xbin)
-        self.redis.set('ybin',self.ybin)
-        self.redis.set('guiding',str(self.guiding))
+#        self.redis.set('gain',self.gain)
+#        self.redis.set('x_science_fiber',self.x_science_fiber)
+#        self.redis.set('y_science_fiber',self.y_science_fiber)
+#        self.redis.set('dateobs',self.dateobs)
+#        self.redis.set('exptime',self.exptime)
+#        self.redis.set('x1',self.x1)
+#        self.redis.set('x2',self.x2)
+#        self.redis.set('y1',self.y1)
+#        self.redis.set('y2',self.y2)
+#        self.redis.set('xbin',self.xbin)
+#        self.redis.set('ybin',self.ybin)
+#        self.redis.set('guiding',str(self.guiding))
         
         # servo parameters
         self.KPx = float(config['KPx'])
@@ -88,15 +88,15 @@ class imager:
         self.Dband = float(config['Dband'])
         self.Corr_max = float(config['Corr_max'])
 
-        self.redis.set('KPx',self.KPx)
-        self.redis.set('KIx',self.KIx)
-        self.redis.set('KDx',self.KDx)
-        self.redis.set('KPy',self.KPy)
-        self.redis.set('KIy',self.KIy)
-        self.redis.set('KDy',self.KDy)        
-        self.redis.set('Imax',self.Imax)
-        self.redis.set('Dband',self.Dband)
-        self.redis.set('Corr_max',self.Corr_max)
+#        self.redis.set('KPx',self.KPx)
+#        self.redis.set('KIx',self.KIx)
+#        self.redis.set('KDx',self.KDx)
+#        self.redis.set('KPy',self.KPy)
+#        self.redis.set('KIy',self.KIy)
+#        self.redis.set('KDy',self.KDy)        
+#        self.redis.set('Imax',self.Imax)
+#        self.redis.set('Dband',self.Dband)
+#        self.redis.set('Corr_max',self.Corr_max)
         
         if not self.simulate:
             sdk3 = AndorSDK3()
@@ -115,7 +115,7 @@ class imager:
     def simulate_star_image(self,x,y,flux,fwhm,background=300.0,noise=0.0):
 
         self.dateobs = datetime.datetime.utcnow()
-        self.redis.set('dateobs',self.dateobs.strftime('%Y-%m-%dT%H:%M:%S.%f'))
+#        self.redis.set('dateobs',self.dateobs.strftime('%Y-%m-%dT%H:%M:%S.%f'))
         
 
         xwidth = self.x2-self.x1
@@ -185,17 +185,17 @@ class imager:
         h, w = self.image.shape
         shape = struct.pack('>II',h,w)
         encoded_img = shape + self.image.tobytes()
-        self.redis.publish('guider_image',encoded_img)
+#        self.redis.publish('guider_image',encoded_img)
 
     # this currently has ~0.5s of overhead
     def take_image(self, exptime):
 
         self.exptime = exptime
-        self.redis.set('exptime',self.exptime)
+#        self.redis.set('exptime',self.exptime)
         
         self.imager.ExposureTime = self.exptime
         self.dateobs = datetime.datetime.utcnow()
-        self.redis.set('dateobs',self.dateobs.strftime('%Y-%m-%dT%H:%M:%S.%f'))
+#        self.redis.set('dateobs',self.dateobs.strftime('%Y-%m-%dT%H:%M:%S.%f'))
         
         t0 = datetime.datetime.utcnow()
         self.image = (self.imager.acquire(timeout=20000).image.astype(np.int16))[self.y1:self.y2,self.x1:self.x2]
@@ -234,13 +234,18 @@ class imager:
         self.y1 = y1
         self.x2 = x2
         self.y2 = y2
-        self.redis.set('x1',self.x1)
-        self.redis.set('x2',self.x2)
-        self.redis.set('y1',self.y1)
-        self.redis.set('y2',self.y2)
+#        self.redis.set('x1',self.x1)
+#        self.redis.set('x2',self.x2)
+#        self.redis.set('y1',self.y1)
+#        self.redis.set('y2',self.y2)
 
     def get_stars(self):
 
+        stars = centroid.get_stars_sep(self.image)
+        stars[:,0] += (self.x1 - 1)
+        stars[:,1] += (self.y1 - 1)
+        return stars
+        
         # this is too slow (~3s/image)!
         #mean, median, std = sigma_clipped_stats(self.image, sigma=3.0)
         #daofind = DAOStarFinder(fwhm=1.0/self.platescale, threshold=5.0*std)
@@ -254,6 +259,7 @@ class imager:
         stars = centroid_all_blobs(imtofeed)
         stars[:,0] += (self.x1 - 1)
         stars[:,1] += (self.y1 - 1)
+        
         return stars
         
     def calc_offsets(self):
@@ -281,8 +287,21 @@ if __name__ == '__main__':
     while True:
         camera.take_image(0.02)
         ds9.set_np2arr(camera.image)
-#        stars_cv = centroid.get_stars_cv(camera.image)
+
+        # extract the pinholes, get the distance between them
+        if True:
+            stars_sep = centroid.get_stars_sep(camera.image)
+            sort_stars = stars_sep[(-stars_sep[:,2]).argsort()]
+            # the brightest four are the pinholes                                                
+            pinholes = sort_stars[0:4,:]
+            for ii in range(len(pinholes[:,0])):
+                for jj in range(len(pinholes[:,0])):
+                    if ii > jj:
+                        print(math.sqrt((pinholes[ii,0] - pinholes[jj,0])**2 + (pinholes[ii,1] - pinholes[jj,1])**2))
+
+
         
+ 
     camera.take_image(0.02)
     camera.save_image('star_projector_20210809.fits', overwrite=True)
     stars_sep = centroid.get_stars_sep(camera.image)

@@ -19,7 +19,7 @@ from tiptilt import tiptilt
 from pdu import pdu
 import redis
 import json
-
+import pyds9
 
 class tres:
 
@@ -42,12 +42,12 @@ class tres:
             self.logger.error('Config file not found: (' + self.config_file + ')')
             sys.exit()
 
-        self.redis = redis.StrictRedis(host=config['REDIS_SERVER'],
-                                       port=config['REDIS_PORT'])
-        self.pub_tracking_data = self.redis.pubsub()
-        
-        self.redis.set('state','Starting')
-        self.redis.set('errors','None')
+#        self.redis = redis.StrictRedis(host=config['REDIS_SERVER'],
+#                                       port=config['REDIS_PORT'])
+#        self.pub_tracking_data = self.redis.pubsub()
+#        
+#        self.redis.set('state','Starting')
+#        self.redis.set('errors','None')
             
         # set up the devices
         self.guider = imager(base_directory, 'zyla.ini', logger=self.logger, simulate=guider_simulate)
@@ -57,8 +57,8 @@ class tres:
         # connect the devices
         self.tiptilt.connect()
         self.calstage.connect()
-        self.redis.set('state','Initialized')
-        self.redis.publish('tracking_data',json.dumps({'timestamp':datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f') ,'x_mispointing':0.0,'y_mispointing':0.0,'north_mispointing':0.0,'east_mispointing':0.0,'dx':0.0,'dy':0.0,'north':0.0,'east':0.0,'counts':0,'fwhm':1.0,'platescale':0.0,'roi_x1':0,'roi_x2':0,'roi_y1':0,'roi_y2':0}))
+#        self.redis.set('state','Initialized')
+#        self.redis.publish('tracking_data',json.dumps({'timestamp':datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f') ,'x_mispointing':0.0,'y_mispointing':0.0,'north_mispointing':0.0,'east_mispointing':0.0,'dx':0.0,'dy':0.0,'north':0.0,'east':0.0,'counts':0,'fwhm':1.0,'platescale':0.0,'roi_x1':0,'roi_x2':0,'roi_y1':0,'roi_y2':0}))
 
         
     # this assumes there are is no confusion (within tolerance) and each offset is small (< tolerance)
@@ -72,9 +72,11 @@ class tres:
     # simulate - Boolean. If true, will use a simulated stellar image
     # save - boolean. If true, it will save the guider images (and increase overhead)
     # subframe - Boolean. If true, it will use a 3*tolerance subframe to guide (decrease overhead). 
-    def guide(self, exptime, offset=(0.0,0.0), tolerance=3.0, simulate=False, save=False, subframe=True):
+    def guide(self, exptime, offset=(0.0,0.0), tolerance=10.0, simulate=False, save=False, subframe=True):
 
-        self.redis.set('state','Guiding')
+        ds9 = pyds9.DS9()
+        
+#        self.redis.set('state','Guiding')
         # move to the middle of the range
         self.tiptilt.move_tip_tilt(1.0,1.0)
         
@@ -100,6 +102,7 @@ class tres:
             # set the subframe
             if subframe:
                 subframesize = int(round(1.5*tolerance/self.guider.platescale))
+                subframesize = int(round(5*tolerance/self.guider.platescale))
                 if (subframesize % 2) == 1: subframesize +=1 # make sure it's even
                 x1 = int(round(self.guider.x_science_fiber + offset[0] - subframesize))
                 x2 = int(round(self.guider.x_science_fiber + offset[0] + subframesize))
@@ -128,12 +131,16 @@ class tres:
                     time.sleep(exptime-elapsed_time)
             else: expose_thread.join()
 
+            ds9.set_np2arr(self.guider.image)
+            # ****** JUST FOR DEBUGGING ******
+            #time.sleep(10)
+            
             # save the image
             if save:
                 objname = 'test'
                 files = glob.glob(self.guider.datapath + "*.fits")
                 index = str(len(files)+1).zfill(4)
-                datestr = datetime.datetime.utcnow().strftime('%m%d%y') 
+                datestr = datetime.datetime.utcnow().strftime('%y%m%d') 
                 filename = self.guider.datapath + objname + '.' + datestr + '.guider.' + index + '.fits'
 
                 # saving can go on in the background
@@ -146,7 +153,7 @@ class tres:
 
             self.logger.info("Finding stars")
             stars = self.guider.get_stars()
-            
+           
             if len(stars) == 0:
                 self.logger.warning("No guide stars in image; skipping correction")
                 if save: save_image_thread.join()
@@ -159,13 +166,14 @@ class tres:
             ndx = np.argmin(dist)
             self.logger.info("Using guide star (" + str(stars[ndx,0]) + ',' +
                              str(stars[ndx,1]) + ') ' + str(dist[ndx]) +
-                             ' pixels from the requested position (' +
+                             ' arcsec (' + str(dist[ndx]/self.guider.platescale) +
+                             ' pixels) from the requested position (' +
                              str(self.guider.x_science_fiber-offset[0]) + ',' +
                              str(self.guider.y_science_fiber-offset[1]) + ')')
 
             # if the star disappears, don't correct to a different star
             # magnitude tolerance, too? (probably not -- clouds could cause trouble)
-            if dist < tolerance:
+            if dist[ndx] < tolerance:
                 p.setPoint((self.guider.x_science_fiber+offset[0],self.guider.y_science_fiber+offset[1]))
 
                 # calculate the X & Y pixel offsets
@@ -181,15 +189,15 @@ class tres:
                 north = self.guider.platescale*(dx*math.cos(PA) - dy*math.sin(PA))
                 east  = self.guider.platescale*(dx*math.sin(PA) + dy*math.cos(PA))
 
-                self.redis.publish('tracking_data',json.dumps({'timestamp':datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f'),'x_mispointing':stars[ndx,0],'y_mispointing':stars[ndx,1],'north_mispointing':north_mispointing,'east_mispointing':east_mispointing,'dx':dx,'dy':dy,'north':north,'east':east,'counts':stars[ndx,2],'fwhm':1.0+np.random.uniform(low=-0.1,high=0.1),'platescale':self.guider.platescale,'roi_x1':x1,'roi_x2':x2,'roi_y1':y1,'roi_y2':y2}))
+#                self.redis.publish('tracking_data',json.dumps({'timestamp':datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f'),'x_mispointing':stars[ndx,0],'y_mispointing':stars[ndx,1],'north_mispointing':north_mispointing,'east_mispointing':east_mispointing,'dx':dx,'dy':dy,'north':north,'east':east,'counts':stars[ndx,2],'fwhm':1.0+np.random.uniform(low=-0.1,high=0.1),'platescale':self.guider.platescale,'roi_x1':x1,'roi_x2':x2,'roi_y1':y1,'roi_y2':y2}))
                 
                 # TODO: make sure the move is within range
                 move_in_range = True
                 
                 # send correction to tip/tilt
                 if move_in_range:
-                    self.logger.info("Moving tip/tilt " + str(north) + '" North, ' + str(east) + '" East')
-                    self.tiptilt.move_north_east(north,east)
+                    self.logger.info("Moving tip/tilt " + str(dx) + ' pixels in X, ' + str(dy) + ' pixels in Y')
+                    self.tiptilt.move_x_y(dx,dy)
                 else:
                     # TODO: move telescope, recenter tip/tilt
                     self.logger.error("Tip/tilt out of range. Must manually recenter")
@@ -198,7 +206,6 @@ class tres:
             # make sure the image is saved first
             if save: save_image_thread.join()
 
-                    
     def take_image(self, filename, exptime, overwrite=False):
 
         # expose while we get the header info
@@ -340,9 +347,19 @@ if __name__ == '__main__':
         sys.exit()
 
     config_file = 'tres.ini'
-    tres = tres(base_directory, config_file, calstage_simulate=True, tiptilt_simulate=True,guider_simulate=True)
-    
-    tres.test_guide_loop(simulate=True, save=False, exptime=1.0)
+    simulate=False
+    tres = tres(base_directory, config_file, calstage_simulate=True,\
+                tiptilt_simulate=simulate,guider_simulate=simulate)
+    apc = pdu(base_directory, 'pdu.ini')
+    if not apc.starprojector.status():
+        apc.starprojector.on()
+
+
+    tres.test_guide_loop(simulate=simulate, save=True, exptime=0.02)
+
+    if apc.starprojector.status():
+        apc.starprojector.off()
+
     
     ipdb.set_trace()
 

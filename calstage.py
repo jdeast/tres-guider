@@ -77,10 +77,10 @@ class calstage:
 #        ipdb.set_trace()
             
         # enable servo and home to negative limit if necessary
-#        pitools.startup(self.calstage, refmodes=('FNL'))
+        pitools.startup(self.calstage, refmodes=('FNL'))
 
         # enable servo and home to center if necessary
-        pitools.startup(self.calstage, refmodes=('FRF'))
+#        pitools.startup(self.calstage, refmodes=('FRF'))
 
 
         # enable servo and home to positive limit if necessary
@@ -91,7 +91,6 @@ class calstage:
 #        pitools.startup(self.calstage, refmodes=('ATZ'))
 #        pitools.startup(self.calstage, refmodes=('RON'))
 #        pitools.startup(self.calstage)
-
         
     def allowedMove(self,position):
         if self.minpos == None:
@@ -183,15 +182,11 @@ if __name__ == '__main__':
 
     config_file = 'calstage.ini'
     calstage = calstage(base_directory, config_file)
-
-    ipdb.set_trace()
-
     
     calstage.connect()
-
-
-    
     calstage.move_to_science()
+    ipdb.set_trace()
+
 
     
     calstage.move_to_sky()
