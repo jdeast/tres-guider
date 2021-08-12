@@ -242,6 +242,7 @@ class imager:
     def get_stars(self):
 
         stars = centroid.get_stars_sep(self.image)
+        stars = centroid.get_stars_model_annulus(self.image)
         stars[:,0] += (self.x1 - 1)
         stars[:,1] += (self.y1 - 1)
         return stars

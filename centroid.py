@@ -7,9 +7,56 @@ import sep
 import datetime, os
 import utils
 import ipdb
+import annulus
 
 # this contains several different (swappable) algorithms to identify stars and return their x, y, intensity, and fwhm
 # they have different advantages for speed and accuracy
+ 
+# determine the centroid in the presence of a hole using
+# a full model of star + hole
+# the input image should be a postage stamp around the fiber hole with one star
+# slow (2s), but most precise. Use in high SNR when cadence is not important
+# also logs additional information useful for monitoring system evolution (hole position, FWHM, brightness)
+def get_stars_model_annulus(image, filename=None):
+    if filename != None:
+        image = pyfits.getdata(filename)
+
+    ylen,xlen=image.shape
+    x_center = xlen/2.0
+    x_hole = xlen/2.0
+    y_center = xlen/2.0
+    y_hole = xlen/2.0
+    sigma = 7.0
+    background = np.median(image)
+    amplitude = np.amax(image)-background
+    hole_size = 9.8
+    pars = [x_center,y_center,sigma,background,amplitude,x_hole,y_hole,hole_size]
+    best = annulus.fit_annulus(image,pars)
+    return np.transpose(np.vstack((best[0], best[1], best[4])))
+
+
+# determine the centroid in the presence of a hole using
+# center of mass plus an empirical correction 
+# the input image should be a postage stamp around the fiber hole with one star
+# least accurate, fast. Use for low SNR
+def get_stars_com_annulus(image, filename=None):
+    if filename != None:
+        image = pyfits.getdata(filename)
+        
+# determine the centroid in the presence of a hole using
+# the power in 4 quadrants plus an empirical correction
+# the input image should be a postage stamp around the fiber hole with one star
+# 
+def get_stars_quad_annulus(image, filename=None):
+    if filename != None:
+        image = pyfits.getdata(filename)
+
+# determine the centroid in the presence of a hole using
+# SEP position plus an empirical correction 
+# the input image should be a postage stamp around the fiber hole with one star
+def get_stars_sep_annulus(image, filename=None):
+    if filename != None:
+        image = pyfits.getdata(filename)
 
 # fast but not very accurate
 def get_stars_cv(image, filename=None):
