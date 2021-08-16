@@ -91,10 +91,10 @@ class AndorGuiderCam(threading.Thread):
 
         self.set_roi(self.x1,self.y1,self.x2,self.y2)
         self.logger.info("Setting frame rate to 0.5 Hz")
-        self.set_frame_period(1.0)
+        self.set_frame_period(2.2)
         self.set_gain(1.0)
         self.logger.info("Setting exposure time to max for 0.5 Hz framerate")
-        self.set_exposure_time(1.0)
+        self.set_exposure_time(2.0)
 
         # Hardcoded here.  Should match values in tres_guider.ini
         # These don't belong here since they are optics and system related but

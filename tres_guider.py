@@ -15,6 +15,7 @@ from astropy.io import fits
 import numpy as np
 import datetime
 import cv2
+import base64
 
 import dfm_telescope as telescope
 
@@ -37,13 +38,20 @@ class TelemetrySender():
     
 #-------------------------------------------------------------------------------
     def __init__(self,config):
-        self.redis = redis.StrictRedis(host=config['REDIS_SERVER'],
-                                       port=config['REDIS_PORT'])
+        self.redis = redis.Redis(host=config['REDIS_SERVER'],
+                                 port=config['REDIS_PORT'])
+        print("Connected Telemetry sender to REDIS server")
+        print(config['REDIS_SERVER'])
+        print(config['REDIS_PORT'])
+        if not self.redis.ping():
+            print("Failed to connect to redis")
+            exit
 #        self.pub_tracking_data = self.redis.pubsub()
 
 #-------------------------------------------------------------------------------
     def send(self,key,data):
-        self.redis.publish(key,data)
+        print(key,len(data))
+        res = self.redis.publish(key,data)
         
 ################################################################################
 class EventSender():
@@ -55,6 +63,12 @@ class EventSender():
         self.server_port = config['REDIS_PORT']
         self.redis = redis.Redis(host=self.server_host,
                                  port=self.server_port)
+        print("Connected Event sender to REDIS server")
+        print(config['REDIS_SERVER'])
+        print(config['REDIS_PORT'])
+        if not self.redis.ping():
+            print("Failed to connect to redis")
+            exit
         self.command_counter = 0
         
 #-------------------------------------------------------------------------------
@@ -73,8 +87,15 @@ class EventReceiver():
     '''Receive gui events from Redis to modify guider operation'''    
     def __init__(self,config,callback):
         self.config = config
-        self.redis = redis.StrictRedis(host=config['REDIS_SERVER'],
-                                       port=config['REDIS_PORT'])
+        self.redis = redis.Redis(host=config['REDIS_SERVER'],
+                                 port=config['REDIS_PORT'])
+        print("Connected Event receiver to REDIS server")
+        print(config['REDIS_SERVER'])
+        print(config['REDIS_PORT'])
+        if not self.redis.ping():
+            print("Failed to connect to redis")
+            exit
+        
         self.pub_tracking_data = self.redis.pubsub()
         self.command_callback = callback
         
@@ -339,9 +360,9 @@ class GuidingSystem():
         # Assume square ROI when tracking
         self.roi_size_pixels = (int(np.round(float(config['ROI_SIZE_ARCSEC']) /
                                              self.arcsec_per_pixel)))
-        self.cam.set_exposure_time(1.0)
-        self.cam.set_frame_period(1.0)
-        res = self.event_sender.send({'exptime':1.0})
+        self.cam.set_exposure_time(2.0)
+        self.cam.set_frame_period(2.1)
+        res = self.event_sender.send({'exptime':2.0})
 
         
 
@@ -518,6 +539,14 @@ class GuidingSystem():
         # Sanity check
         if ((self.image.shape[0] != self.y2-self.y1) or
             (self.image.shape[1] != self.x2-self.x1)):
+            print(self.image.shape[0])
+            print(self.image.shape[1])
+            print(self.x1)
+            print(self.x2)
+            print(self.y1)
+            print(self.y2)
+            print(self.camera_xdim_pix)
+            print(self.camera_ydim_pix)
             self.logger.error("Mismatch in image dimensions")
             return
 
@@ -561,11 +590,11 @@ class GuidingSystem():
 #-------------------------------------------------------------------------------
     def set_exptime(self,param):
         if param >= 0.2 and param < 1000:
-            self.framing = False
-            self.cam.stop_framing()
+#            self.framing = False
+#            self.cam.stop_framing()
             self.cam.set_frame_period(param)
-            self.cam.set_exposure_time(param)
-            self.cam.start_framing()            
+            self.cam.set_exposure_time(param-0.1)
+#            self.cam.start_framing()            
             res = self.event_sender.send({'exptime':param})
         return(0)
     
@@ -772,6 +801,9 @@ class GuidingSystem():
 #        shape = struct.pack('>II',h,w)
 #        encoded_img = self.telem_image.tobytes()
 
+        img_base64 = base64.b64encode(self.image.astype(np.int16))
+        ENCODING = 'utf-8'
+        
         telem_struct = \
             json.dumps({'timestamp':\
                         self.dateobs.strftime('%Y-%m-%dT%H:%M:%S.%f'),
@@ -815,7 +847,7 @@ class GuidingSystem():
                         'arcsec_per_um_guider_ccd':self.arcsec_per_um_guider_ccd,
                         'exposure_time':self.cam.get_exposure_time(),
                         'stars':self.stars.tolist(),
-                        'image':self.image.tolist()})
+                        'image':img_base64.decode(ENCODING)})
 
         self.telem_out.send('guider_data',telem_struct)
 
