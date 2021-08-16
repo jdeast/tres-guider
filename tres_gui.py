@@ -11,6 +11,7 @@ import datetime
 import struct
 import redis
 import json
+import atexit
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -18,11 +19,9 @@ from matplotlib import dates
 
 #import pyds9
 
-from PyQt5 import QtCore, QtWidgets
-from PyQt5.QtWidgets import QApplication, QWidget
-from PyQt5.QtCore import pyqtSignal, pyqtSlot, QSettings, Qt
+import logging
 
-from quamash import QEventLoop, QThreadExecutor
+from quamash import QEventLoop, QtGui, QtCore, QtWidgets
 
 
 from tres_guider_control_ui import Ui_Dialog
@@ -50,7 +49,7 @@ class EventSender():
 
 
 ################################################################################
-class TresGUI(QWidget):
+class TresGUI(QtWidgets.QWidget):
     def __init__(self, base_directory,config_file,event_loop,
                  logger=None,parent = None):
         '''
@@ -75,7 +74,7 @@ class TresGUI(QWidget):
                               self.config_file + ')')
             sys.exit()        
         
-        QWidget.__init__(self,parent)
+        QtWidgets.QWidget.__init__(self,parent)
         self.ui = Ui_Dialog()
         self.ui.setupUi(self)
 
@@ -147,6 +146,9 @@ class TresGUI(QWidget):
                                'guider_state'))
         
         self.command_sender = EventSender(self.config)
+        self.exit_request = asyncio.Event()
+        
+        print("Done with TresGUI init")
 
 #-------------------------------------------------------------------------------
 #    async def master(self):
@@ -156,11 +158,14 @@ class TresGUI(QWidget):
 #-------------------------------------------------------------------------------
     @staticmethod
     async def receive_telem(callback,server,port,data_name):
+        print("Setting up to receive telemetry")
         redis_sub = await aioredis.create_redis('redis://'+server+':'+port)
+        print("create_redis done")
         res = await redis_sub.subscribe(data_name)
         sub_channel = res[0]        
         
-        receive_counter = 0        
+        receive_counter = 0
+        print("Waiting for telem")
         while (await sub_channel.wait_message()):
             msg = await sub_channel.get_json()
             callback(msg)
@@ -192,7 +197,11 @@ class TresGUI(QWidget):
             receive_counter += 1
 
             
-
+#-------------------------------------------------------------------------------
+    def closeEvent(self,*args):
+        print("Exiting")
+        self.exit_request.set()
+            
 #-------------------------------------------------------------------------------
     def replot_counts(self):
         # bucket counts plot
@@ -324,7 +333,7 @@ class TresGUI(QWidget):
         
 #------------------------------------------------------------------------------
     def on_guider_data(self,new_data):
-#        print("Received guider data");
+#        print("Received guider data")
         ts = new_data['timestamp']
         tstamp  = datetime.datetime.strptime(ts,'%Y-%m-%dT%H:%M:%S.%f')
         newtime = dates.date2num(tstamp)
@@ -480,20 +489,16 @@ if __name__ == "__main__":
     base_directory = './'
 
     config_file = 'tres_gui.ini'
-    
-    app = QApplication(sys.argv)
+    logging.getLogger('quamash').setLevel(logging.ERROR)
+    app = QtWidgets.QApplication(sys.argv)
     loop = QEventLoop(app)
-    loop.set_debug(True)
     asyncio.set_event_loop(loop)
-
+    atexit.register(loop.close)
+    
     tresgui = TresGUI(base_directory,config_file,loop)
     tresgui.show()
-    
-    if sys.version_info[0] == 3 and sys.version_info[1] >= 8:
-        asyncio.events._set_running_loop(loop)
-        
-    with loop:
-        loop.run_forever()
-        
+
+    loop.run_until_complete(tresgui.exit_request.wait())
+         
         
     
