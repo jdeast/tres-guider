@@ -11,6 +11,7 @@ import json
 import cv2
 import numpy as np
 from matplotlib import dates
+import base64
 
 ################################################################################
 class CommandSender():
@@ -20,8 +21,12 @@ class CommandSender():
     def __init__(self,config):
         self.server_host = config['REDIS_SERVER']
         self.server_port = config['REDIS_PORT']
+        print("Connecting to redis for receiving commands")
         self.redis = redis.Redis(host=self.server_host,
                                  port=self.server_port)
+        if not self.redis.ping():
+            print("Failed to connect to redis")
+            exit
         self.command_counter = 0
         
 #-------------------------------------------------------------------------------
@@ -53,7 +58,7 @@ class TresDisplay():
                           + self.config_file + ')')
             exit()
 
-        
+        print("Loaded config file")
         self.display_name = "TRES Guider Image"
         self.screen_res = 500 
         self.rebin_factor = 1.0
@@ -76,24 +81,34 @@ class TresDisplay():
             
         cv2.setMouseCallback(self.display_name,self.mouse_event,self)
         cv2.startWindowThread()
+        print("Created cv2 window thread")
         
         self.receive_task = asyncio.ensure_future(
             self.receive_telem(self.on_guider_data,
                                self.config['REDIS_SERVER'],
                                self.config['REDIS_PORT'],
                                'guider_data'))
+        print("Created receive task")
         self.have_guider_data = False
+        self.exit_request = asyncio.Event()
+        self.default_img = np.zeros([512,512])
+        cv2.imshow(self.display_name,self.default_img)
 
 #-------------------------------------------------------------------------------
     @staticmethod
     async def receive_telem(callback,server,port,data_name):
-        redis_sub = await aioredis.create_redis('redis://'+server+':'+port)
+        conn_str = 'redis://'+server+':'+port
+        print("Connecting to redis for telem:",conn_str)
+        redis_sub = await aioredis.create_redis(conn_str)
+        print("Created connection")
         res = await redis_sub.subscribe(data_name)
+        print("Subscribed to "+data_name)        
         sub_channel = res[0]        
-        
+        print("In receive_telem")
         receive_counter = 0        
         while (await sub_channel.wait_message()):
             msg = await sub_channel.get_json()
+            print("Got telem")
             callback(msg)
             receive_counter += 1
             
@@ -133,7 +148,7 @@ class TresDisplay():
             self.roi_x2 = click_x + int(self.roi_size_pixels/2)
             self.roi_y1 = click_y - int(self.roi_size_pixels/2)
             self.roi_y2 = click_y + int(self.roi_size_pixels/2)
-            print(self.roi_x1,self.roi_x2,self.roi_y1,self.roi_y2)
+            self.logger.info("ROI request x1: %i x2: %i y1: %i y2: %i" % (self.roi_x1,self.roi_x2,self.roi_y1,self.roi_y2))
             self.command_sender.send({'roi':[self.roi_x1,self.roi_y1,
                                            self.roi_x2,self.roi_y2]})
 
@@ -142,7 +157,7 @@ class TresDisplay():
             self.roi_x2 = self.camera_xdim_pix #self.camera_xdim_pix/2 + 128
             self.roi_y1 = 0 #self.camera_ydim_pix/2 - 128
             self.roi_y2 = self.camera_ydim_pix #self.camera_ydim_pix/2 + 128
-
+            self.logger.info("Resetting ROI to %i %i %i %i" % (self.roi_x1,self.roi_y1,self.roi_x2,self.roi_y2))
             
             self.command_sender.send({'roi':[self.roi_x1,self.roi_y1,
                                            self.roi_x2,self.roi_y2]})
@@ -453,11 +468,18 @@ class TresDisplay():
         self.annotate_image(frame_uint8_scaled,self.stars)            
         cv2.imshow(self.display_name,frame_uint8_scaled)
         
+#------------------------------------------------------------------------------
 #        q to quit, spacebar to stop/start framing, r to reset colormap
+    def process_events(self):
+        is_window_open = cv2.getWindowProperty(self.display_name,
+                                               cv2.WND_PROP_VISIBLE)
+        if is_window_open < 1:
+            cv2.destroyAllWindows()
+            self.exit_request.set()
         k = cv2.waitKey(1)
         if(k & 0xFF == ord('q')):
             cv2.destroyAllWindows()
-            exit()
+            self.exit_request.set()
         elif (k & 0xFF == ord(' ')):
             self.command_sender.send({'toggle_framing':1})
         elif (k & 0xFF == ord('r')):
@@ -472,8 +494,6 @@ class TresDisplay():
             self.annotate_image(frame_uint8_scaled,self.stars)
             cv2.imshow(self.display_name,frame_uint8_scaled)
 
-
-    
 #------------------------------------------------------------------------------
     def on_guider_data(self,new_data):
         print("Received guider data");
@@ -488,8 +508,8 @@ class TresDisplay():
         self.roi_x2 = new_data['roi_x2']
         self.roi_y1 = new_data['roi_y1']
         self.roi_y2 = new_data['roi_y2']
-        self.roi_xdim = self.roi_x2 - self.roi_x1 + 1
-        self.roi_ydim = self.roi_y2 - self.roi_y1 + 1
+        self.roi_xdim = self.roi_x2 - self.roi_x1
+        self.roi_ydim = self.roi_y2 - self.roi_y1
         self.roi_xcenter = self.roi_xdim/2
         self.roi_ycenter = self.roi_ydim/2
 
@@ -517,19 +537,20 @@ class TresDisplay():
         self.camera_xcenter_pix = new_data['camera_xcenter_pix']
         self.camera_ycenter_pix = new_data['camera_ycenter_pix']
         self.pixel_size_um = new_data['pixel_size_um']
-        self.image = np.asarray(new_data['image'])
+        base64_bytes = new_data['image'].encode('utf-8')
+        img_bytes = base64.b64decode(base64_bytes)
+        self.image = np.frombuffer(img_bytes,dtype=np.int16).reshape((self.roi_ydim,self.roi_xdim))
         self.have_guider_data = True
         self.refresh_image()
         print("Done ingesting guider data")
 
-
-
-async def counter():
+async def counter(display_obj):
     counter_val = 0
     while True:
-        print("Mainloop counter: ",counter_val)
+#        print("Mainloop counter: ",counter_val)
+        display_obj.process_events()
         counter_val = counter_val + 1
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.05)
 
 ################################################################################
 if __name__ == "__main__":
@@ -538,10 +559,10 @@ if __name__ == "__main__":
     config_file = 'tres_display.ini'
 
     tresdisplay = TresDisplay(base_directory,config_file)
-#    count = asyncio.ensure_future(counter())
+    count = asyncio.ensure_future(counter(tresdisplay))
     loop = asyncio.get_event_loop()
     try:
-        loop.run_forever()
+        loop.run_until_complete(tresdisplay.exit_request.wait())
     except:
         loop.close()
     
