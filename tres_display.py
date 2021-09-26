@@ -4,6 +4,7 @@ import os
 import utils
 from configobj import ConfigObj
 import asyncio
+import async_timeout
 import aioredis
 import redis
 import datetime
@@ -12,6 +13,7 @@ import cv2
 import numpy as np
 from matplotlib import dates
 import base64
+import ipdb
 
 ################################################################################
 class CommandSender():
@@ -85,32 +87,57 @@ class TresDisplay():
         
         self.receive_task = asyncio.ensure_future(
             self.receive_telem(self.on_guider_data,
-                               self.config['REDIS_SERVER'],
-                               self.config['REDIS_PORT'],
-                               'guider_data'))
+                           self.config['REDIS_SERVER'],
+                           self.config['REDIS_PORT'],
+                           'guider_data'))
         print("Created receive task")
         self.have_guider_data = False
         self.exit_request = asyncio.Event()
         self.default_img = np.zeros([512,512])
         cv2.imshow(self.display_name,self.default_img)
 
+
 #-------------------------------------------------------------------------------
     @staticmethod
-    async def receive_telem(callback,server,port,data_name):
-        conn_str = 'redis://'+server+':'+port
-        print("Connecting to redis for telem:",conn_str)
-        redis_sub = await aioredis.create_redis(conn_str)
-        print("Created connection")
-        res = await redis_sub.subscribe(data_name)
-        print("Subscribed to "+data_name)        
-        sub_channel = res[0]        
+    async def reader(channel: aioredis.client.PubSub, callback):
         print("In receive_telem")
-        receive_counter = 0        
-        while (await sub_channel.wait_message()):
-            msg = await sub_channel.get_json()
-            print("Got telem")
-            callback(msg)
-            receive_counter += 1
+        receive_counter = 0
+        while True:
+            try:
+                async with async_timeout.timeout(10):
+                    msg = await channel.get_message(ignore_subscribe_messages=True)
+                    if msg is not None:
+                        print("Got telem %i" % (receive_counter,))
+                        callback(json.loads(msg["data"]))
+                        del msg
+                        receive_counter += 1
+                    await asyncio.sleep(0.01)
+            except asyncio.TimeoutError:
+                pass
+
+        
+#-------------------------------------------------------------------------------
+    async def receive_telem(self,callback,server,port,data_name):
+        conn_str = 'redis://'+server  # +':'+port
+        print("Connecting to redis for telem:",conn_str)
+        self.redis_sub = aioredis.from_url(conn_str,decode_responses=True)
+        print("Created connection")
+        self.pubsub = self.redis_sub.pubsub()
+        res = await self.pubsub.subscribe(data_name)
+        print("Subscribed to " + data_name)
+        asyncio.create_task(self.reader(self.pubsub,callback))
+
+        # sub_channel = res[0]        
+        # receive_counter = 0
+        # while True:
+        #     try:
+        #         async with async_timeout.timeout(1):
+        #             msg = await 
+        #         while (await sub_channel.wait_message()):
+        #     msg = await sub_channel.get_json()
+        #     print("Got telem %i" % (receive_counter,))
+        #     callback(msg)
+        #     receive_counter += 1
             
 #-------------------------------------------------------------------------------
     def mouse_event(self,event,x,y,flags,param):
@@ -537,9 +564,9 @@ class TresDisplay():
         self.camera_xcenter_pix = new_data['camera_xcenter_pix']
         self.camera_ycenter_pix = new_data['camera_ycenter_pix']
         self.pixel_size_um = new_data['pixel_size_um']
-        base64_bytes = new_data['image'].encode('utf-8')
-        img_bytes = base64.b64decode(base64_bytes)
-        self.image = np.frombuffer(img_bytes,dtype=np.int16).reshape((self.roi_ydim,self.roi_xdim))
+        self.base64_bytes = new_data['image'].encode('utf-8')
+        self.img_bytes = base64.b64decode(self.base64_bytes)
+        self.image = np.frombuffer(self.img_bytes,dtype=np.int16).reshape((self.roi_ydim,self.roi_xdim))
         self.have_guider_data = True
         self.refresh_image()
         print("Done ingesting guider data")
