@@ -35,6 +35,12 @@ class PID:
                                              'pid')
         else:
             self.logger = logger
+
+
+    def reset(self):
+        self.error = 0.0
+        self.Derivator = np.array([0.0, 0.0])
+        self.Integrator = np.array([0.0, 0.0])
         
     def update(self,current_value):
         """

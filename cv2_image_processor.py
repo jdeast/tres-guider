@@ -7,8 +7,12 @@ import cv2
 ################################################################################
 class ImageProcessor():
     '''Manage image processing to compute guiding feedback'''
-    def __init__(self,config):
-        pass
+    def __init__(self,config,logger=None):
+        # set up the log file
+        if logger == None:
+            self.logger = utils.setup_logger('./log/','image_processor')
+        else:
+            self.logger = logger
 
 #-------------------------------------------------------------------------------
     def populate_header(self,hdr):
@@ -145,7 +149,7 @@ class ImageProcessor():
             return ([],imtofeed) # nothing above the threshhold
         stars = self.centroid_all_blobs(imtofeed,areacutoff = 160)
         
-        return(stars,imtofeed)
+        return(stars)
 
 
 ################################################################################

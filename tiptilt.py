@@ -9,7 +9,6 @@ import utils
 import numpy as np
 import argparse
 import time
-import redis
 
 class TipTilt:
 
@@ -32,49 +31,59 @@ class TipTilt:
             self.logger.error('Config file not found: (' + self.config_file + ')')
             sys.exit()
 
-        self.redis = redis.Redis(host=config['REDIS_SERVER'],
-                                 port=config['REDIS_PORT'])
-            
         # serial number of the TIP/TILT stage and controller
         self.sn = config['SN_TIPTILT']
         self.model = config['MODEL_TIPTILT']
         self.sn_controller = config['SN_CONTROLLER']
         self.model_controller = config['MODEL_CONTROLLER']
 
-        # stage steps per arcsecond on the sky 
-        self.steps_per_arcsec = float(config['STEPS_PER_ARCSEC'])
+        self.steps_per_arcsec_tip = float(config['STEPS_PER_ARCSEC_TIP']) 
+        self.steps_per_arcsec_tilt = float(config['STEPS_PER_ARCSEC_TILT']) 
         
         # angle between North and axis A, in radians
         self.theta = float(config['THETA'])*math.pi/180.0
 
         # if there's a flip in the mapping, apply it
-        if config['FLIP']: self.sign = -1.0 
-        else: self.sign = 1.0
+        if config['FLIP'] == 'True':
+            self.sign = -1.0 
+        else:
+            self.sign = 1.0
 
         # use the PI python library to initialize the device
-        if not self.simulate: self.tiptilt = GCSDevice()
+        if not self.simulate:
+            self.tiptilt = GCSDevice()
 
-        self.get_allowed_ranges()
+        # range of motion
+        self.mintip_cmd = None
+        self.maxtip_cmd = None
+        self.mintilt_cmd = None
+        self.maxtilt_cmd = None
+        self.tip_0 = None
+        self.tilt_0 = None
         
-        self.position = {'A':0.0,'B':0.0}
+        self.position = {'A':None,'B':None,'N': None, 'E': None}
         
     def get_allowed_ranges(self):
 
         if self.simulate:
-            self.mintip = -100.0
-            self.maxtip = 100.0
-            self.mintilt = -100.0
-            self.maxtilt = 100.0
+            self.mintip_cmd = 0.0
+            self.maxtip_cmd = 2.0
+            self.mintilt_cmd = 0.0
+            self.maxtilt_cmd = 2.0
         else:
-            self.mintip = self.tiptilt.qTMN()['A']
-            self.maxtip = self.tiptilt.qTMX()['A']
-            self.mintilt = self.tiptilt.qTMN()['B']
-            self.maxtilt = self.tiptilt.qTMX()['B']
-
+            self.mintip_cmd = self.tiptilt.qTMN()['A']
+            self.maxtip_cmd = self.tiptilt.qTMX()['A']
+            self.mintilt_cmd = self.tiptilt.qTMN()['B']
+            self.maxtilt_cmd = self.tiptilt.qTMX()['B']
+            
+        self.tip_0  = (self.mintip_cmd  +  self.maxtip_cmd)/2.0
+        self.tilt_0 = (self.mintilt_cmd + self.maxtilt_cmd)/2.0
+            
     def connect(self):
 
         if self.simulate:
             self.get_allowed_ranges()
+            self.move_tip_tilt(0, 0)
             return
 
         if self.tiptilt.IsConnected():
@@ -109,44 +118,87 @@ class TipTilt:
         self.get_allowed_ranges()
         
         # move to the middle of the range
-        self.move_tip_tilt(1.0,1.0)
+        self.move_tip_tilt(0, 0)
+
+
+    def sky_to_mirror(self,north_arcsec,east_arcsec):
+        # Rotate sky angles in arcsec through theta ccw rotation to get angles
+        # in mirror axes and convert to mirror units of steps
+        tip_cmd  = (self.sign * self.steps_per_arcsec_tip *
+                    (north_arcsec * math.cos(self.theta) -
+                     east_arcsec * math.sin(self.theta)))
+        tilt_cmd = (self.steps_per_arcsec_tilt *
+                    (north_arcsec * math.sin(self.theta) +
+                     east_arcsec * math.cos(self.theta)))
         
-    '''
-    Move the tip/tilt stage directly in stage coordinates. Check for
-    limits, connectivity, etc
-    '''
-    def move_tip_tilt(self, tip, tilt):
-        # make sure we're connected
-        if not self.simulate:
-            if not self.tiptilt.IsConnected():
-                self.connect()
+        return(tip_cmd,tilt_cmd)
 
+    def mirror_to_sky(self,tip_cmd,tilt_cmd):
+        # Rotate mirror angles through theta cw rotation to get angles in sky
+        # axes
+        tip_arcsec = ((tip_cmd - self.tip_0) / self.sign /
+                      self.steps_per_arcsec_tip)
+        tilt_arcsec = ((tilt_cmd - self.tilt_0) /
+                       self.steps_per_arcsec_tilt)
+        
+        north_arcsec  = (tip_arcsec * math.cos(self.theta) +
+                         tilt_arcsec * math.sin(self.theta))
+        east_arcsec = (-1* tip_arcsec * math.sin(self.theta) +
+                       tilt_arcsec * math.cos(self.theta))
+        
+        return(north_arcsec,east_arcsec)
+
+
+    def move_tip_tilt(self,tip,tilt):
+        '''
+        Pass in tip (Axis A) and tilt (Axis B) in mirror units (steps), where
+        0,0 is the center of travel.
+        This code checks for limits, connectivity, etc
+        This is the lowest level move
+        '''
+
+        # Include center position in cmds
+        tip_cmd = tip + self.tip_0
+        tilt_cmd = tilt + self.tilt_0
+        
         # check bounds of requested move
-        if tip < self.mintip or tip > self.maxtip or tilt < self.mintilt or tilt > self.maxtilt:
-            self.logger.error("Requested move out of range")
-            return
+        if ((tip_cmd < self.mintip_cmd) or (tip_cmd > self.maxtip_cmd) or
+            (tilt_cmd < self.mintilt_cmd) or (tilt_cmd > self.maxtilt_cmd)):
+            self.logger.error("Requested move (tip=" + str(tip) +
+                              ", tilt=" + str(tilt) + " out of range")
+            return False
 
-        self.logger.info("moving to tip = " + str(tip) + ', tilt=' + str(tilt))
+        
+        self.logger.info('moving to tip_cmd = ' + \
+                         str(tip_cmd) + ', tilt_cmd =' + \
+                         str(tilt_cmd))
         
         # move
         if not self.simulate:
-            self.tiptilt.MOV('A',tip)
-            self.tiptilt.MOV('B',tilt)
+            if not self.tiptilt.IsConnected():
+                self.connect()
+            print("%f %f" % (tip,tilt))
+            self.tiptilt.MOV('A',tip_cmd)
+            self.tiptilt.MOV('B',tilt_cmd)
+            
+        # qPOS doesn't work, so we must update the position whenever we move it
+        # (and we have no way to check it went where we commanded it)
 
-        self.position['A'] = tip
-        self.position['B'] = tilt
+        # A and B are raw stage commands
+        self.position['A'] = tip_cmd
+        self.position['B'] = tilt_cmd
 
-        self.redis.set('tip',tip)
-        self.redis.set('tilt',tilt)
-        
+        (self.position['N'],self.position['E']) = self.mirror_to_sky(tip_cmd,
+                                                                     tilt_cmd)
+
         # wait for move?
         
         # make sure it moved where we wanted
         #if position != self.get_position():
         #    pass
 
-        return
-
+        return True
+    
     '''
     Move the tip/tilt stage North and East a specified number of
     arcseconds on the sky 
@@ -154,39 +206,34 @@ class TipTilt:
     def move_north_east(self, north, east):
 
         # get current position
-        ttpos = self.get_position()
+        # ttpos = self.get_position()
                 
         # translate north & east (arcsec on sky) to 
         # tip and tilt (stage steps)
         # requires angle, magnitude, and flip
-        tip  = (ttpos['A'] + self.sign * self.steps_per_arcsec * (north * math.cos(self.theta) -
-                                                                  east * math.sin(self.theta)))
-        tilt = (ttpos['B'] + self.steps_per_arcsec*(north * math.sin(self.theta) +
-                                                    east * math.cos(self.theta)))
+        
+#        tip  = (ttpos['A'] + self.sign * self.steps_per_arcsec *
+#                (north * math.cos(self.theta) - east * math.sin(self.theta)))
+#        tilt = (ttpos['B'] + self.steps_per_arcsec *
+#                (north * math.sin(self.theta) + east * math.cos(self.theta)))
 
+        (tip_cmd,tilt_cmd) =  self.sky_to_mirror(north, east)
         # move the tip/tilt
-        return self.move_tip_tilt(tip,tilt)
+        return self.move_tip_tilt(tip_cmd,tilt_cmd)
 
 
     # qPOS doesn't seem to work, but it seems to move
     # keep track of the position ourselves
     def get_position(self):
-
         return self.position
         
-        # make sure we're connected
-        if not self.tiptilt.IsConnected():
-            self.connect()
-
-        return self.tiptilt.qPOS()
-        return (self.tiptilt.qPOS('A'),self.tiptilt.qPOS('B'))
 
     def populate_header(self,hdr):
         ttpos = self.get_position()
         hdr['TTTIPPOS'] = (ttpos['A'],
-                           "Tip Position of the tip/tilt stage (urad)")
+                           "Tip Position of the tip/tilt stage (arcsec)")
         hdr['TTTILPOS'] = (ttpos['B'],
-                           "Tilt Position of the tip/tilt stage (urad)")
+                           "Tilt Position of the tip/tilt stage (arcsec)")
         hdr['TTMODEL'] = (self.model,
                           "Model number of the tip/tilt stage")
         hdr['TTSN'] = (self.sn,
@@ -210,37 +257,35 @@ if __name__ == '__main__':
     opt = parser.parse_args()
     
     if socket.gethostname() == 'tres-guider':
-        base_directory = '/home/tres/tres-guider'
+        base_directory = '/home/tres/jan/tres-guider'
     else:
         print('unsupported system')
         sys.exit()
 
-    config_file = 'tiptilt.ini'
+    config_file = 'tip_tilt.ini'
     tiptilt = TipTilt(base_directory, config_file)
 
     tiptilt.connect()
 
     if opt.home:
-        tiptilt.move_tip_tilt(1.0,1.0)
+        tiptilt.move_tip_tilt(-1.0,-1.0)
         time.sleep(5)
         tiptilt.move_tip_tilt(0.0,0.0)
         time.sleep(5)
-        tiptilt.move_tip_tilt(2.0,2.0)
-        time.sleep(5)
         tiptilt.move_tip_tilt(1.0,1.0)
+        time.sleep(5)
+        tiptilt.move_tip_tilt(0.0,0.0)
     elif opt.move1:
-        tiptilt.move_tip_tilt(0.0,0.0)
+        tiptilt.move_tip_tilt(-1.0,-1.0)
     elif opt.move2:
-        tiptilt.move_tip_tilt(0.0,2.0)
+        tiptilt.move_tip_tilt(-1.0,1.0)
     elif opt.move3:
-        tiptilt.move_tip_tilt(2.0,2.0)
+        tiptilt.move_tip_tilt(1.0,1.0)
     elif opt.move4:
-        tiptilt.move_tip_tilt(2.0,0.0)
+        tiptilt.move_tip_tilt(1.0,-1.0)
 
 #    print(tiptilt.get_position())
 
 #    tiptilt.move_tip_tilt(0.0,0.0)
 #    print(tiptilt.get_position())
-
-    ipdb.set_trace()
 

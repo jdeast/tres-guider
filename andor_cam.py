@@ -13,8 +13,11 @@ import numpy as np
 import select
 import time
 from scipy.ndimage.filters import gaussian_filter
-
+from math import ceil
 from pyAndorSDK3 import AndorSDK3
+from collections import OrderedDict, deque
+import ipdb
+#from Queue import Queue
 
 ################################################################################
 class AndorGuiderCam(threading.Thread):
@@ -40,7 +43,8 @@ class AndorGuiderCam(threading.Thread):
 
         self.sdk3 = AndorSDK3()
         self.imager = self.sdk3.cameras[0].camera()
-        
+#        self.cmd_q = Queue()
+#        print(self.imager.options_TemperatureControl)
         self.terminate = False  # Should we exit this thread
         self.camera_xdim_pix = int(config['CAM_XDIM'])
         self.camera_ydim_pix = int(config['CAM_YDIM'])
@@ -67,19 +71,31 @@ class AndorGuiderCam(threading.Thread):
             print("Pixel size mismatch %f %f" % (self.pixel_size_um,
                                                  self.imager.PixelWidth))
             exit()
-            
-            
-        
+
         self.model = config['MODEL']
         self.sn = config['SN']
-        
+#        self.imager.LogLevel ='VERB'
         self.imager.SensorCooling = True
+#        self.imager.TemperatureControl = -20.0
+        self.imager.FanSpeed == "On"
+        self.imager.CycleMode == "Continuous"
+        self.imager.TriggerMode == "Software"
+        self.imager.ElectronicShutteringMode == "Global"
+        self.imager.SpuriousNoiseFilter = False
+        self.imager.StaticBlemishCorrection = False
+        self.imager.pixelEncoding = 'Mono16'
+        self.buffer_num_frames = 5
+        self.done_framing = True
+        print("Does camera support arbitrary ROIs:",self.imager.FullAOIControl)
+        print("Pixel readout rate:",self.imager.PixelReadoutRate)
+        print("Readout time:",self.imager.ReadoutTime)
+        self.frame_counter = 0
         print("Current sensor temperature is %f" %
               (self.imager.SensorTemperature,))
         print(self.imager.TemperatureStatus)
         
         self.new_image_callback = new_image_callback
-
+        self.framing = False
         self.x1 = 0
         self.x2 = self.camera_xdim_pix
         self.y1 = 0
@@ -89,12 +105,12 @@ class AndorGuiderCam(threading.Thread):
         self.xbin = 1
         self.ybin = 1
 
-        self.set_roi(self.x1,self.y1,self.x2,self.y2)
+        self.set_roi(self.y1,self.x1,self.y2,self.x2)
         self.logger.info("Setting frame rate to 0.5 Hz")
-        self.set_frame_period(2.2)
         self.set_gain(1.0)
-        self.logger.info("Setting exposure time to max for 0.5 Hz framerate")
-        self.set_exposure_time(2.0)
+        self.logger.info("Setting exposure time")
+        self.set_frame_period(2.0)        
+        self.set_exposure_time(0.004)
 
         # Hardcoded here.  Should match values in tres_guider.ini
         # These don't belong here since they are optics and system related but
@@ -146,21 +162,24 @@ class AndorGuiderCam(threading.Thread):
         self.imager.SensorCooling = False
         pass
 
-
+#-------------------------------------------------------------------------------
+    def get_camera_dims(self):
+        return(self.camera_ydim_pix,self.camera_xdim_pix)
+    
 #-------------------------------------------------------------------------------
     def set_gain(self,gain):
         self.gain = gain
         self.logger.info("Not supported by the Zyla")
 
 #-------------------------------------------------------------------------------
-    def set_roi(self,x1,y1,x2,y2):
+    def set_roi(self,y1,x1,y2,x2):
         """Set the region of interest readout
 
         arguments:
-        x1: (int) top left corner of image x coordinate
         y1: (int) top left corner of image y coordinate
-        x2: (int) bottom right corner of image x coordinate
+        x1: (int) top left corner of image x coordinate
         y2: (int) bottom right corner of image y coordinate        
+        x2: (int) bottom right corner of image x coordinate
         """
         
         self.x1 = int(x1)
@@ -172,7 +191,7 @@ class AndorGuiderCam(threading.Thread):
         self.imager.AOIHeight = self.y2 - self.y1
         self.imager.AOITop = self.y1 + 1 
         
-        self.logger.info("Setting camera ROI to %i,%i,%i,%i" %
+        self.logger.info("Setting camera ROI to x1: %i,y1: %i,x2: %i,y2: %i" %
                          (self.x1,self.y1,self.x2,self.y2))
 
 #-------------------------------------------------------------------------------
@@ -184,13 +203,13 @@ class AndorGuiderCam(threading.Thread):
         self.x2 = self.imager.AOIWidth + self.x1
         self.y2 = self.imager.AOIHeight + self.y1
         
-        return(self.x1,self.y1,self.x2,self.y2)
+        return(self.y1,self.x1,self.y2,self.x2)
 
 #-------------------------------------------------------------------------------
-    def set_binning(self,xbin,ybin):
+    def set_binning(self,ybin,xbin):
         """Set the camera binning
-        xbin: Binning factor for x dimension
         ybin: Binning factor for y dimension
+        xbin: Binning factor for x dimension
         """
 
         self.imager.AOIHBin = xbin
@@ -200,33 +219,45 @@ class AndorGuiderCam(threading.Thread):
         self.ybin = ybin
 
 #-------------------------------------------------------------------------------
-    def get_binning(self,xbin,ybin):
+    def get_binning(self,ybin,xbin):
         """Get the camera binning
         """
         
-        return(self.imager.AOIHBin,self.imager.AOIVBin)
+        return(self.imager.AOIVBin,self.imager.AOIHBin)
         
 #-------------------------------------------------------------------------------
     def get_camsize(self):
-        return(self.imager.PixelWidth,self.imager.PixelHeight)
+        return(self.imager.PixelHeight,self.imager.PixelWidth)
 
 #-------------------------------------------------------------------------------
-    def pix_to_um_from_center(self,x,y):
+    def get_sensor_temp(self):
+        return(self.imager.SensorTemperature)
+
+#-------------------------------------------------------------------------------
+    def get_sensor_temp_status(self):
+        return(self.imager.TemperatureStatus)   
+
+#-------------------------------------------------------------------------------
+    def get_frame_counter(self):
+        return(self.frame_counter)   
+    
+#-------------------------------------------------------------------------------
+    def pix_to_um_from_center(self,y,x):
         '''
         Takes an x and y pixel coordinate and returns the offset from the
         center of the camera in microns
         '''
-        return((float(x) - self.camera_xcenter_pix)*self.pixel_size_um,
-               (float(y) - self.camera_ycenter_pix)*self.pixel_size_um)    
+        return((float(y) - self.camera_ycenter_pix)*self.pixel_size_um,
+               (float(x) - self.camera_xcenter_pix)*self.pixel_size_um)
 
 #-------------------------------------------------------------------------------
-    def um_from_center_to_pix(self,x,y):
+    def um_from_center_to_pix(self,y,x):
         '''
         Takes a distance in microns from the center of the camera and returns
         corresponding pixel coordinates
         '''
-        return((float(x)/self.pixel_size_um)+self.camera_xcenter_pix,
-               (float(y)/self.pixel_size_um)+self.camera_ycenter_pix)
+        return((float(y)/self.pixel_size_um)+self.camera_ycenter_pix,
+               (float(x)/self.pixel_size_um)+self.camera_xcenter_pix)
 
 #-------------------------------------------------------------------------------
     def um_to_pix(self,um):
@@ -243,8 +274,7 @@ class AndorGuiderCam(threading.Thread):
         arguments:
         seconds: (float) time between successive readouts of the camera
         """
-
-        self.imager.FrameRate = 1. / seconds
+        self.imager.FrameRate = 1./seconds
         self.frame_period = seconds
 
 #-------------------------------------------------------------------------------
@@ -254,7 +284,7 @@ class AndorGuiderCam(threading.Thread):
         arguments:
         seconds: (float) time between successive readouts of the camera
         """
-        self.logger.info("Frame persiod is set to %f" %
+        self.logger.info("Frame period is set to %f" %
                          (1./self.imager.FrameRate,))
         return(1./self.imager.FrameRate)
     
@@ -266,7 +296,7 @@ class AndorGuiderCam(threading.Thread):
         seconds: (float) duration of exposure time. Must be less than the
         frame period as dicated by the camera timing
         """
-        
+
         self.exposure_time = seconds        
         self.imager.ExposureTime = self.exposure_time
         
@@ -323,7 +353,7 @@ class AndorGuiderCam(threading.Thread):
         return(self.hole_mask[self.y1:self.y2,self.x1:self.x2])
 
 #-------------------------------------------------------------------------------
-    def set_simulated_fsm_correction(self,x,y):
+    def set_simulated_fsm_correction(self,y,x):
         '''
         When simulating the camera image, use this function to set the simulated FSM correction
         tip/tilt so that the simulated stars shift according to the FSM action
@@ -333,7 +363,7 @@ class AndorGuiderCam(threading.Thread):
 
 
 #-------------------------------------------------------------------------------
-    def simulate_star_image(self,xpos,ypos,flux,fwhm,background=300.0,noise=0.0,
+    def simulate_star_image(self,ypos,xpos,flux,fwhm,background=300.0,noise=0.0,
                             jitter=0.0):
         ''' 
         This creates a simple simulated image of a star field
@@ -435,47 +465,75 @@ class AndorGuiderCam(threading.Thread):
 #                                      str(yii) + "); ignoring")
                 
         # now convert to 16 bit int
-        self.image = self.image.astype(np.int16)
+        self.image = self.image.astype(np.uint16)
 
         self.image = self.image * self.hole_mask
         neg_pix = np.where(self.image < 0)
         if len(neg_pix) > 0:
             self.image[neg_pix] = 0
         h, w = self.image.shape
-        return(self.image)
-
-#-------------------------------------------------------------------------------
-    def tick(self):
-        ''' Deliver a simualted camera frame to the callback function'''
-        cam_image = self.imager.acquire(timeout=(self.exposure_time*1000) +
-                                        1000).image.astype(np.int16)
-
-        # sim_star_img = self.simulate_star_image(self.star_xpositions,
-        #                                         self.star_ypositions,
-        #                                         self.star_fluxes,
-        #                                         self.star_fwhm,
-        #                                         noise=self.noise,
-        #                                         background=self.background,
-        #                                         jitter=self.jitter_amplitude)
-        # sim_star_roi = sim_star_img[self.y1:self.y2,self.x1:self.x2] 
-        # if (cam_image.shape != sim_star_roi.shape):
-        #     print("Mismatch between camera frame and current ROI")
-        #     print(cam_image.shape)
-        #     print(sim_star_roi.shape)
-        #     return
         
-        roi = cam_image
-        #* self.hole_mask[self.y1:self.y2,self.x1:self.x2]  \
-        #              + sim_star_roi
-        self.dateobs = datetime.datetime.utcnow()
+        return(self.image)
+    
+#-------------------------------------------------------------------------------
+    def start_framing(self):
+        self.framing = True
+        self.done_framing = False
+        circ_buf = True
+        series = deque()
+        self.imager.TriggerMode = "Internal"
+        self.imager.CycleMode = "Continuous"
+        self.imager.configure()
+        imgsize = self.imager.ImageSizeBytes
+        print("Image size in bytes:",imgsize)
+        for i in range(0,self.buffer_num_frames):
+            self.imager._queue_buffer(imgsize)
+        print("Starting framing")
+        self.imager.AcquisitionStart()
+        print("Started acquisition")
+        frame = 0
+        while self.framing == True:
+            try:
+                # try:
+                #     res = self.cmd_q.get(False)
+                #     if res[0] == "exposure_time":
+                #         self.imager.ExposureTime = res[1]
+                #     elif res[0] == "cadence":
+                #         self.imager.FrameRate = 1./res[1]
+                # except Queue.Empty:
+                #     pass
+                timeout = max(5000, ceil(5 * 1000 / self.imager.FrameRate))
+                if self.imager._queued_buffers.qsize() == 0:
+                    if circ_buf :
+                        self.imager.queue(series.popleft()._np_data, imgsize)
+#                print("Triggered camera");
+#                self.imager.SoftwareTrigger()
+                acq = self.imager._acquire(timeout)
+                series.append(acq)
+                print("Got frame %i" % (frame,))
+                self.frame_counter += 1
+                self.dateobs = datetime.datetime.utcnow()
+                roi = np.frombuffer(acq._np_data,dtype=np.uint16).reshape(
+                    (self.imager.AOIHeight,self.imager.AOIWidth))
+                if (self.new_image_callback != None):
+                    self.new_image_callback(self.dateobs,self.camera_ydim_pix,
+                                            self.camera_xdim_pix,self.y1,
+                                            self.x1,self.y2,self.x2,roi)
+
+                frame += 1
+            except Exception as e:
+                if frame != None:
+                    print()
+                    print("Error on frame "+str(frame))
+                self.imager.AcquisitionStop()
+                self.imager._flush()
+                raise e
             
-        if (self.new_image_callback != None):
-            self.new_image_callback(self.dateobs,self.camera_xdim_pix,
-                                    self.camera_ydim_pix,self.x1,self.y1,
-                                    self.x2,self.y2,roi)
-                
-        self.frame_counter += 1;
-            
+        self.imager.AcquisitionStop()
+        self.imager._flush()
+        self.done_framing = True
+        print("Finished framing")
+        
 #-------------------------------------------------------------------------------
     def run(self):
         '''Start simulated camera readout of frames cv, and deliver to 
@@ -484,34 +542,32 @@ class AndorGuiderCam(threading.Thread):
         self.logger.info("Staring andor camera thread and framing")
         self.frame_counter = 0
 
-        self.ticker = threading.Event()
-        self.framing = True
-        while not self.ticker.wait(self.frame_period):
-            if self.framing:
-                self.tick()
-            if self.terminate:
-                return
-
-#-------------------------------------------------------------------------------
-    def start_framing(self):
-        '''Enable camera framing'''
-        self.logger.info("Starting andor camera framing")
-        self.framing = True
-
-            
+        self.start_framing()            
+        while self.terminate == False:
+            time.sleep(0.01)
+        print("Exiting camera thread")
+        
 #-------------------------------------------------------------------------------
     def stop_framing(self):
         '''Cleanup operations'''
         self.logger.info("Stopping andor camera framing")
         self.framing = False
+        while self.done_framing == False:
+            time.sleep(0.1)
+        self.frame_counter = 0
 
 #-------------------------------------------------------------------------------
     def exit(self):
         self.logger.info("Andor camera thread terminating")
         self.framing = False
+        self.imager.AcquisitionStop()
+        self.imager._flush()
         self.terminate = True
 
 ################################################################################
+def test_callback(dateobs,camera_ydim_pix,camera_xdim_pix,y1,x1,y2,x2,roi):
+    print("Got frame")
+
 if __name__ == "__main__":
     if socket.gethostname() == 'tres-guider':
         base_directory = '/home/tres/jan/tres-guider'
@@ -529,8 +585,9 @@ if __name__ == "__main__":
     print(cam.get_roi())
     print(cam.get_frame_period())
     print(cam.get_exposure_time())
-#    cam.get_frame_period()
-#    cam.get_exposure_time()
-#    cam.start_framing()
-
-#    cam.stop_framing()
+    
+    cam.start()
+    while True:
+        time.sleep(1)
+    cam.stop_framing()
+    cam.exit()
