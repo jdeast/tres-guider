@@ -160,6 +160,9 @@ class TresGUI(QtWidgets.QWidget):
         self.plate_solve_ra_mispointing_arcsec = None
         self.plate_solve_dec_mispointing_arcsec = None
         self.wcs_hdr_dict = {}
+        self.update_counter = 0
+        self.plate_solve_ra_mispointing_arcsec = None
+        self.plate_solve_dec_mispointing_arcsec = None
 
         self.event_tree = {'loop_state':self.on_loop_changed,
                            'framing':self.on_framing_changed,
@@ -198,14 +201,14 @@ class TresGUI(QtWidgets.QWidget):
                         callback(json.loads(msg["data"]))
                         del msg
                         receive_counter += 1
-                    await asyncio.sleep(0.01)
+                    await asyncio.sleep(0.001)
             except asyncio.TimeoutError:
                 pass
 
         
 #-------------------------------------------------------------------------------
     async def receive_telem(self,callback,server,port,data_name):
-        conn_str = 'redis://'+server  # +':'+port
+        conn_str = 'redis://'+server +':'+port
         print("Connecting to redis for telem:",conn_str)
         self.telem_redis_sub = aioredis.from_url(conn_str,decode_responses=True)
         print("Created connection")
@@ -227,14 +230,14 @@ class TresGUI(QtWidgets.QWidget):
                         callback(json.loads(msg["data"]))
                         del msg
                         receive_counter += 1
-                    await asyncio.sleep(0.01)
+                    await asyncio.sleep(0.001)
             except asyncio.TimeoutError:
                 pass
 
         
 #-------------------------------------------------------------------------------
     async def receive_events(self,callback,server,port,data_name):
-        conn_str = 'redis://'+server  # +':'+port
+        conn_str = 'redis://'+server  +':'+port
         print("Connecting to redis for events:",conn_str)
         self.event_redis_sub = aioredis.from_url(conn_str,decode_responses=True)
         print("Created connection")
@@ -389,7 +392,7 @@ class TresGUI(QtWidgets.QWidget):
         self.gdrbeax = self.gdr_bullseye_fig.add_axes(self.subplot_axrect)  # aspect ratio
 #        else:
 #            self.gdrbax.clear()
-        fov=5.0
+        fov=10.0
 
         ages = np.array(self.gdr_tilt_data_x['timestamp'])
         ages = (ages-ages[0])*2/2.31539234e-5
@@ -433,8 +436,8 @@ class TresGUI(QtWidgets.QWidget):
         self.gdr_profile_fig.clear()
         self.gdrpax = self.gdr_profile_fig.add_axes(self.axrect)  # aspect ratio
 
-        star_center_pix_x = int(np.round(self.region_xcen))
-        star_center_pix_y = int(np.round(self.region_ycen))
+        star_center_pix_x = int(np.round(self.camera_xcenter_pix))
+        star_center_pix_y = int(np.round(self.camera_ycenter_pix))
         angular_offsets = np.linspace(-1*fov/2,fov/2,num=num_pixels)
         yslice = self.image[star_center_pix_y-int(num_pixels/2):star_center_pix_y+int(num_pixels/2),star_center_pix_x]
         xslice = self.image[star_center_pix_y,star_center_pix_x-int(num_pixels/2):star_center_pix_x+int(num_pixels/2)]
@@ -523,7 +526,7 @@ class TresGUI(QtWidgets.QWidget):
                 self.ui.solutionStatusLineEdit.setText('Running')
             elif self.plate_solve_running == False:
                 self.ui.solutionStatusLineEdit.setText('Not Solved')
-            
+
         if self.plate_solve_ra_mispointing_arcsec is None:
             self.ui.raOffsetLineEdit.setText("None")
         else:
@@ -618,13 +621,16 @@ class TresGUI(QtWidgets.QWidget):
         self.gdr_fsm_data_y['dy'].append(new_data['fsm_angle_y'])
         self.plate_solve_running = new_data['plate_solve_running']
         self.plate_solve_success = new_data['plate_solve_success']
-        self.plate_solve_ra_mispointing_arcsec = new_data['plate_solve_ra_mispointing_arcsec']
-        self.plate_solve_dec_mispointing_arcsec = new_data['plate_solve_dec_mispointing_arcsec']
+        self.plate_solve_ra_mispointing_arcsec = \
+                            new_data['plate_solve_ra_mispointing_arcsec']
+        self.plate_solve_dec_mispointing_arcsec = \
+                            new_data['plate_solve_dec_mispointing_arcsec']
         self.wcs_hdr_dict = new_data['wcs_hdr_dict']
-        
-        self.base64_bytes = new_data['image'].encode('utf-8')
-        self.img_bytes = base64.b64decode(self.base64_bytes)
-        self.image = np.frombuffer(self.img_bytes,dtype=np.uint16).reshape((self.roi_ydim,self.roi_xdim))
+
+        if self.cadence >= 1.0:
+            self.base64_bytes = new_data['image'].encode('utf-8')
+            self.img_bytes = base64.b64decode(self.base64_bytes)
+            self.image = np.frombuffer(self.img_bytes,dtype=np.uint16).reshape((self.roi_ydim,self.roi_xdim))
 
         self.sky_base64_bytes = new_data['sky_roi'].encode('utf-8')
         self.sky_roi_bytes = base64.b64decode(self.sky_base64_bytes)
@@ -638,15 +644,26 @@ class TresGUI(QtWidgets.QWidget):
         self.star_roi_bytes = base64.b64decode(self.star_base64_bytes)
         self.star_roi = np.frombuffer(self.star_roi_bytes,dtype=np.uint16).reshape((self.star_roi_ydim,self.star_roi_xdim))
 #        print(new_data)
-        self.replot_tilts()
-        self.replot_bullseye()
-        self.replot_profile()
-        self.replot_focus()
-        self.replot_counts()
+
+        self.update_counter += 1
+        if self.cadence >= 1.0:
+            self.replot_tilts()
+            self.replot_bullseye()
+            self.replot_profile()
+            self.replot_focus()
+            self.replot_counts()
+        else:
+            pass
+#            if self.update_counter % int(round(1./self.cadence)) == 0:
+#                self.replot_tilts()
+            #     self.replot_bullseye()
+            #     self.replot_profile()
+            #     self.replot_focus()
+            #     self.replot_counts()            
         self.update_gui()
         
         if self.ds9_live_updates:
-            if self.ds9_inspect_ff:
+            if self.ds9_inspect_ff and self.cadence >= 1.0:
                 try:
                     ff_hdr = {}
                     if self.plate_solve_success:
@@ -1038,8 +1055,7 @@ class TresGUI(QtWidgets.QWidget):
         ra_offset = self.ui.raOffsetSpinBox.value()
         dec_offset = self.ui.decOffsetSpinBox.value()
         res = self.command_sender.send(
-            {'offset_mount':[ra_offset,dec_offset]})
-
+            {'offset_mount':[ra_offset,dec_offset]})        
         pass
             
 ################################################################################

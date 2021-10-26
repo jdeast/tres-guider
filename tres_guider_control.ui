@@ -194,7 +194,7 @@
             <bool>true</bool>
            </property>
            <property name="sizePolicy">
-            <sizepolicy hsizetype="Expanding" vsizetype="Minimum">
+            <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
              <horstretch>0</horstretch>
              <verstretch>0</verstretch>
             </sizepolicy>
@@ -209,6 +209,13 @@
             <string>Guider Status</string>
            </property>
            <layout class="QGridLayout" name="gridLayout_3">
+            <item row="4" column="2">
+             <widget class="QLabel" name="label_6">
+              <property name="text">
+               <string>Frame Counter:</string>
+              </property>
+             </widget>
+            </item>
             <item row="2" column="1">
              <widget class="QLineEdit" name="raJitterEdit"/>
             </item>
@@ -310,13 +317,6 @@
             <item row="4" column="3">
              <widget class="QLineEdit" name="frameCounterEdit"/>
             </item>
-            <item row="4" column="2">
-             <widget class="QLabel" name="label_6">
-              <property name="text">
-               <string>Frame Counter:</string>
-              </property>
-             </widget>
-            </item>
            </layout>
           </widget>
          </item>
@@ -365,7 +365,7 @@
              </size>
             </property>
             <property name="currentIndex">
-             <number>5</number>
+             <number>6</number>
             </property>
             <widget class="QWidget" name="tab_6">
              <property name="sizePolicy">
@@ -1210,8 +1210,219 @@
             </widget>
             <widget class="QWidget" name="tab_5">
              <attribute name="title">
-              <string>Offload</string>
+              <string>Power Strip</string>
              </attribute>
+             <widget class="QWidget" name="verticalLayoutWidget_6">
+              <property name="geometry">
+               <rect>
+                <x>10</x>
+                <y>0</y>
+                <width>731</width>
+                <height>111</height>
+               </rect>
+              </property>
+              <layout class="QVBoxLayout" name="verticalLayout_9">
+               <item>
+                <layout class="QHBoxLayout" name="horizontalLayout_19">
+                 <item>
+                  <layout class="QGridLayout" name="gridLayout">
+                   <item row="0" column="7">
+                    <widget class="QLineEdit" name="lineEdit_ps7"/>
+                   </item>
+                   <item row="0" column="0">
+                    <widget class="QLineEdit" name="lineEdit_ps0"/>
+                   </item>
+                   <item row="1" column="0">
+                    <widget class="QRadioButton" name="radioButton0_Off">
+                     <property name="text">
+                      <string>Off</string>
+                     </property>
+                     <attribute name="buttonGroup">
+                      <string notr="true">buttonGroup_2</string>
+                     </attribute>
+                    </widget>
+                   </item>
+                   <item row="0" column="3">
+                    <widget class="QLineEdit" name="lineEdit_ps3"/>
+                   </item>
+                   <item row="0" column="5">
+                    <widget class="QLineEdit" name="lineEdit_ps5"/>
+                   </item>
+                   <item row="0" column="1">
+                    <widget class="QLineEdit" name="lineEdit_ps1"/>
+                   </item>
+                   <item row="0" column="6">
+                    <widget class="QLineEdit" name="lineEdit_ps6"/>
+                   </item>
+                   <item row="0" column="4">
+                    <widget class="QLineEdit" name="lineEdit_ps4"/>
+                   </item>
+                   <item row="0" column="2">
+                    <widget class="QLineEdit" name="lineEdit_ps2"/>
+                   </item>
+                   <item row="2" column="0">
+                    <widget class="QRadioButton" name="radioButton0_On">
+                     <property name="text">
+                      <string>On</string>
+                     </property>
+                     <attribute name="buttonGroup">
+                      <string notr="true">buttonGroup_2</string>
+                     </attribute>
+                    </widget>
+                   </item>
+                   <item row="1" column="1">
+                    <widget class="QRadioButton" name="radioButton1_Off">
+                     <property name="text">
+                      <string>Off</string>
+                     </property>
+                     <attribute name="buttonGroup">
+                      <string notr="true">buttonGroup</string>
+                     </attribute>
+                    </widget>
+                   </item>
+                   <item row="2" column="1">
+                    <widget class="QRadioButton" name="radioButton1_On">
+                     <property name="text">
+                      <string>On</string>
+                     </property>
+                     <attribute name="buttonGroup">
+                      <string notr="true">buttonGroup</string>
+                     </attribute>
+                    </widget>
+                   </item>
+                   <item row="1" column="2">
+                    <widget class="QRadioButton" name="radioButton2_Off">
+                     <property name="text">
+                      <string>Off</string>
+                     </property>
+                     <attribute name="buttonGroup">
+                      <string notr="true">buttonGroup_3</string>
+                     </attribute>
+                    </widget>
+                   </item>
+                   <item row="2" column="2">
+                    <widget class="QRadioButton" name="radioButton2_On">
+                     <property name="text">
+                      <string>On</string>
+                     </property>
+                     <attribute name="buttonGroup">
+                      <string notr="true">buttonGroup_3</string>
+                     </attribute>
+                    </widget>
+                   </item>
+                   <item row="1" column="3">
+                    <widget class="QRadioButton" name="radioButton3_Off">
+                     <property name="text">
+                      <string>Off</string>
+                     </property>
+                     <attribute name="buttonGroup">
+                      <string notr="true">buttonGroup_4</string>
+                     </attribute>
+                    </widget>
+                   </item>
+                   <item row="2" column="3">
+                    <widget class="QRadioButton" name="radioButton3_On">
+                     <property name="text">
+                      <string>On</string>
+                     </property>
+                     <attribute name="buttonGroup">
+                      <string notr="true">buttonGroup_4</string>
+                     </attribute>
+                    </widget>
+                   </item>
+                   <item row="1" column="4">
+                    <widget class="QRadioButton" name="radioButton4_Off">
+                     <property name="text">
+                      <string>Off</string>
+                     </property>
+                     <attribute name="buttonGroup">
+                      <string notr="true">buttonGroup_5</string>
+                     </attribute>
+                    </widget>
+                   </item>
+                   <item row="2" column="4">
+                    <widget class="QRadioButton" name="radioButton4_On">
+                     <property name="text">
+                      <string>On</string>
+                     </property>
+                     <attribute name="buttonGroup">
+                      <string notr="true">buttonGroup_5</string>
+                     </attribute>
+                    </widget>
+                   </item>
+                   <item row="1" column="5">
+                    <widget class="QRadioButton" name="radioButton5_Off">
+                     <property name="text">
+                      <string>Off</string>
+                     </property>
+                     <attribute name="buttonGroup">
+                      <string notr="true">buttonGroup_8</string>
+                     </attribute>
+                    </widget>
+                   </item>
+                   <item row="2" column="5">
+                    <widget class="QRadioButton" name="radioButton5_On">
+                     <property name="text">
+                      <string>On</string>
+                     </property>
+                     <attribute name="buttonGroup">
+                      <string notr="true">buttonGroup_8</string>
+                     </attribute>
+                    </widget>
+                   </item>
+                   <item row="1" column="6">
+                    <widget class="QRadioButton" name="radioButton6_Off">
+                     <property name="text">
+                      <string>Off</string>
+                     </property>
+                     <attribute name="buttonGroup">
+                      <string notr="true">buttonGroup_6</string>
+                     </attribute>
+                    </widget>
+                   </item>
+                   <item row="2" column="6">
+                    <widget class="QRadioButton" name="radioButton6_On">
+                     <property name="text">
+                      <string>On</string>
+                     </property>
+                     <attribute name="buttonGroup">
+                      <string notr="true">buttonGroup_6</string>
+                     </attribute>
+                    </widget>
+                   </item>
+                   <item row="1" column="7">
+                    <widget class="QRadioButton" name="radioButton7_Off">
+                     <property name="text">
+                      <string>Off</string>
+                     </property>
+                     <attribute name="buttonGroup">
+                      <string notr="true">buttonGroup_7</string>
+                     </attribute>
+                    </widget>
+                   </item>
+                   <item row="2" column="7">
+                    <widget class="QRadioButton" name="radioButton7_On">
+                     <property name="text">
+                      <string>On</string>
+                     </property>
+                     <attribute name="buttonGroup">
+                      <string notr="true">buttonGroup_7</string>
+                     </attribute>
+                    </widget>
+                   </item>
+                   <item row="2" column="8">
+                    <widget class="QPushButton" name="pushButton">
+                     <property name="text">
+                      <string>Apply</string>
+                     </property>
+                    </widget>
+                   </item>
+                  </layout>
+                 </item>
+                </layout>
+               </item>
+              </layout>
+             </widget>
             </widget>
             <widget class="QWidget" name="tab_2">
              <attribute name="title">
@@ -2112,7 +2323,15 @@
   <slot>on_correct_pointing()</slot>
  </slots>
  <buttongroups>
-  <buttongroup name="guidingModeButtonGroup"/>
   <buttongroup name="coordSysButtonGroup"/>
+  <buttongroup name="buttonGroup_2"/>
+  <buttongroup name="buttonGroup_3"/>
+  <buttongroup name="buttonGroup_4"/>
+  <buttongroup name="buttonGroup_5"/>
+  <buttongroup name="buttonGroup_6"/>
+  <buttongroup name="buttonGroup_7"/>
+  <buttongroup name="buttonGroup_8"/>
+  <buttongroup name="buttonGroup"/>
+  <buttongroup name="guidingModeButtonGroup"/>
  </buttongroups>
 </ui>

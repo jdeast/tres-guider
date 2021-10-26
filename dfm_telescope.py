@@ -80,8 +80,10 @@ class Telescope:
         while True and time_elapsed < timeout:
             time_elapsed = (datetime.datetime.utcnow()-t0).total_seconds()
             data += s.recv(1024)
-            if data[-1] == ';': break
-
+            try:
+                if data[-1] == ';': break
+            except: break
+            
         self.logger.info("Closing connection")
         s.close()
             
