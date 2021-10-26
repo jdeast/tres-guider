@@ -1098,54 +1098,114 @@
              <attribute name="title">
               <string>Plate Solving</string>
              </attribute>
-             <widget class="QPushButton" name="plateSolveButton">
-              <property name="geometry">
-               <rect>
-                <x>320</x>
-                <y>10</y>
-                <width>80</width>
-                <height>23</height>
-               </rect>
-              </property>
-              <property name="text">
-               <string>Plate Solve</string>
-              </property>
-             </widget>
-             <widget class="QPushButton" name="correctPointingButton">
-              <property name="geometry">
-               <rect>
-                <x>430</x>
-                <y>10</y>
-                <width>181</width>
-                <height>23</height>
-               </rect>
-              </property>
-              <property name="text">
-               <string>Correct Pointing via Mount</string>
-              </property>
-             </widget>
-             <widget class="QLabel" name="label_37">
+             <widget class="QWidget" name="verticalLayoutWidget_5">
               <property name="geometry">
                <rect>
                 <x>20</x>
                 <y>10</y>
-                <width>101</width>
-                <height>21</height>
+                <width>714</width>
+                <height>91</height>
                </rect>
               </property>
-              <property name="text">
-               <string>Solution Status:</string>
-              </property>
-             </widget>
-             <widget class="QLineEdit" name="solutionStatusLineEdit">
-              <property name="geometry">
-               <rect>
-                <x>130</x>
-                <y>10</y>
-                <width>171</width>
-                <height>23</height>
-               </rect>
-              </property>
+              <layout class="QVBoxLayout" name="verticalLayout_8">
+               <item>
+                <layout class="QHBoxLayout" name="horizontalLayout_18">
+                 <item>
+                  <widget class="QLabel" name="label_37">
+                   <property name="text">
+                    <string>Solution Status:</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QLineEdit" name="solutionStatusLineEdit"/>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="plateSolveButton">
+                   <property name="text">
+                    <string>Plate Solve</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <spacer name="horizontalSpacer">
+                   <property name="orientation">
+                    <enum>Qt::Horizontal</enum>
+                   </property>
+                   <property name="sizeHint" stdset="0">
+                    <size>
+                     <width>40</width>
+                     <height>20</height>
+                    </size>
+                   </property>
+                  </spacer>
+                 </item>
+                </layout>
+               </item>
+               <item>
+                <layout class="QHBoxLayout" name="horizontalLayout_20">
+                 <item>
+                  <widget class="QLabel" name="label_38">
+                   <property name="text">
+                    <string>Solution RA Offset (&quot;):</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QLineEdit" name="raOffsetLineEdit"/>
+                 </item>
+                 <item>
+                  <widget class="QDoubleSpinBox" name="raOffsetSpinBox">
+                   <property name="decimals">
+                    <number>2</number>
+                   </property>
+                   <property name="minimum">
+                    <double>-999.990000000000009</double>
+                   </property>
+                   <property name="maximum">
+                    <double>999.990000000000009</double>
+                   </property>
+                   <property name="singleStep">
+                    <double>0.100000000000000</double>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QLabel" name="label_39">
+                   <property name="text">
+                    <string>Solution Dec Offset (&quot;):</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QLineEdit" name="decOffsetLineEdit"/>
+                 </item>
+                 <item>
+                  <widget class="QDoubleSpinBox" name="decOffsetSpinBox">
+                   <property name="decimals">
+                    <number>2</number>
+                   </property>
+                   <property name="minimum">
+                    <double>-999.990000000000009</double>
+                   </property>
+                   <property name="maximum">
+                    <double>999.990000000000009</double>
+                   </property>
+                   <property name="singleStep">
+                    <double>0.100000000000000</double>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="correctPointingButton">
+                   <property name="text">
+                    <string>Send to Mount</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
+              </layout>
              </widget>
             </widget>
             <widget class="QWidget" name="tab_5">
@@ -2052,7 +2112,6 @@
   <slot>on_correct_pointing()</slot>
  </slots>
  <buttongroups>
-  <buttongroup name="acqModeButtonGroup"/>
   <buttongroup name="guidingModeButtonGroup"/>
   <buttongroup name="coordSysButtonGroup"/>
  </buttongroups>

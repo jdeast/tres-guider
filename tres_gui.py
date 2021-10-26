@@ -157,6 +157,8 @@ class TresGUI(QtWidgets.QWidget):
         self.region_radius = 20
         self.plate_solve_success = False
         self.plate_solve_running = False
+        self.plate_solve_ra_mispointing_arcsec = None
+        self.plate_solve_dec_mispointing_arcsec = None
         self.wcs_hdr_dict = {}
 
         self.event_tree = {'loop_state':self.on_loop_changed,
@@ -522,6 +524,16 @@ class TresGUI(QtWidgets.QWidget):
             elif self.plate_solve_running == False:
                 self.ui.solutionStatusLineEdit.setText('Not Solved')
             
+        if self.plate_solve_ra_mispointing_arcsec is None:
+            self.ui.raOffsetLineEdit.setText("None")
+        else:
+            self.ui.raOffsetLineEdit.setText(
+                str(round(self.plate_solve_ra_mispointing_arcsec,2)))
+        if self.plate_solve_dec_mispointing_arcsec is None:
+            self.ui.decOffsetLineEdit.setText("None")
+        else:
+            self.ui.decOffsetLineEdit.setText(
+                str(round(self.plate_solve_dec_mispointing_arcsec,2)))
             
 #------------------------------------------------------------------------------
     def on_guider_data(self,new_data):
@@ -606,6 +618,8 @@ class TresGUI(QtWidgets.QWidget):
         self.gdr_fsm_data_y['dy'].append(new_data['fsm_angle_y'])
         self.plate_solve_running = new_data['plate_solve_running']
         self.plate_solve_success = new_data['plate_solve_success']
+        self.plate_solve_ra_mispointing_arcsec = new_data['plate_solve_ra_mispointing_arcsec']
+        self.plate_solve_dec_mispointing_arcsec = new_data['plate_solve_dec_mispointing_arcsec']
         self.wcs_hdr_dict = new_data['wcs_hdr_dict']
         
         self.base64_bytes = new_data['image'].encode('utf-8')
@@ -810,7 +824,30 @@ class TresGUI(QtWidgets.QWidget):
         self.plate_solve_running = sval[1]
         self.wcs_hdr_dict = sval[2]
         self.plate_solve_res = sval[3]
+        self.plate_solve_ra_mispointing_arcsec = sval[4]
+        self.plate_solve_dec_mispointing_arcsec = sval[5]
+        if self.plate_solve_success:
+            self.ui.solutionStatusLineEdit.setText('Solved')
+        else:
+            if self.plate_solve_running:            
+                self.ui.solutionStatusLineEdit.setText('Running')
+            elif self.plate_solve_running == False:
+                self.ui.solutionStatusLineEdit.setText('Not Solved')
         
+        if self.plate_solve_ra_mispointing_arcsec is None:
+            self.ui.raOffsetLineEdit.setText("None")
+        else:
+            self.ui.raOffsetLineEdit.setText(
+                str(round(self.plate_solve_ra_mispointing_arcsec,2)))
+            self.ui.raOffsetSpinBox.setValue(
+                round(self.plate_solve_ra_mispointing_arcsec,2))
+        if self.plate_solve_dec_mispointing_arcsec is None:
+            self.ui.decOffsetLineEdit.setText("None")
+        else:
+            self.ui.decOffsetLineEdit.setText(
+                str(round(self.plate_solve_dec_mispointing_arcsec,2)))
+            self.ui.decOffsetSpinBox.setValue(
+                round(self.plate_solve_dec_mispointing_arcsec,2))
         
 #-------------------------------------------------------------------------------
     def on_loop_changed(self,sval):
@@ -998,6 +1035,11 @@ class TresGUI(QtWidgets.QWidget):
 #-------------------------------------------------------------------------------
     def on_correct_pointing(self,sval):
         print("Correcting telescope pointing")
+        ra_offset = self.ui.raOffsetSpinBox.value()
+        dec_offset = self.ui.decOffsetSpinBox.value()
+        res = self.command_sender.send(
+            {'offset_mount':[ra_offset,dec_offset]})
+
         pass
             
 ################################################################################
