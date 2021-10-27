@@ -358,7 +358,7 @@ class StarProjector:
     # so it can be used as a telescope replacement
     # I'm going to assume that North is up, East is left as seen on the Andor
     # I want to translate that into pixels
-    def offset_target_object(self, east, north):
+    def jog(self, east, north):
 
         self.logger.info('Moving ' + str(east) + '" east, ' + str(north) + '" North')
         x,y = self.east_north_to_projx_projy(east,north) # arcsec

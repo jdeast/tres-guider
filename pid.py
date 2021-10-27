@@ -108,6 +108,12 @@ class PID:
     def setKd(self,D):
         self.Kd=D
 
+    def setPID(self,P,I,D):
+        self.Kp=P
+        self.Ki=I
+        self.Kd=D
+
+        
     def getPoint(self):
         return self.set_point
 

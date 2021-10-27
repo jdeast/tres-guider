@@ -14,9 +14,9 @@ import ipdb
 # copied to /home/tres/gaia_index_files/
 # configured in /usr/etc/astrometry.cfg
 
-def astrometry(imagename,rakey='RA',deckey='DEC',pixscalekey='PIXSCALE',
-               pixscale=None,quadlimit=[0.45,0.55],radius=None,logger=None,
-               verbose=False):
+def astrometry(imagename,rakey='RA',deckey='DEC',pixscalekey='PIXSCALE',\
+               pixscale=None,quadlimit=[0.45,0.55],parity=None,\
+               downsample=None,radius=None,logger=None,verbose=False):
 
     t0 = datetime.datetime.utcnow()    
     hdr = fits.getheader(imagename)
@@ -30,29 +30,27 @@ def astrometry(imagename,rakey='RA',deckey='DEC',pixscalekey='PIXSCALE',
     cmd = 'solve-field'
         
     try:
-        if pixscale == None:
-            pixscale = float(hdr[pixscalekey])
+        if pixscale == None: pixscale = float(hdr[pixscalekey])
     except:
         pass
 
     # limiting the pixel scale dramatically speeds up the solution
-    # because it limits the index files searched (which are big and expensive to load)
+    # because it limits the index files searched (big and expensive to load)
     if pixscale != None:
         cmd += ' --scale-units arcsecperpix' + \
-               ' --scale-low ' + str(0.99*pixscale) + \
-               ' --scale-high ' + str(1.01*pixscale)
-    
+               ' --scale-low ' + str(0.95*pixscale) + \
+               ' --scale-high ' + str(1.05*pixscale)
+
+    if parity != None: cmd += ' --parity ' + parity
+    if downsample != None: cmd += ' --downsample ' + str(downsample)
+            
     # giving it an initial guess mildly speeds up the solution
     if radius != None:
-        try:
-            ra = float(hdr[rakey])
-        except:
-            ra = ten(hdr[rakey])*15.0
+        try: ra = float(hdr[rakey])
+        except: ra = ten(hdr[rakey])*15.0
         
-        try:
-            dec = float(hdr[deckey])
-        except:
-            dec = ten(hdr[deckey])
+        try: dec = float(hdr[deckey])
+        except: dec = ten(hdr[deckey])
 
         # negative numbers are interpreted as multiples of the FOV
         if radius < 0:
@@ -80,8 +78,7 @@ def astrometry(imagename,rakey='RA',deckey='DEC',pixscalekey='PIXSCALE',
     # dump output if verbose not set
     if not verbose:
         cmd += ' >/dev/null 2>&1'
-    print(cmd)
-#    ipdb.set_trace()
+    if logger != None: logger.info("platesolving command is "+cmd)
     os.system(cmd)
     
     # insert the solution into the original image

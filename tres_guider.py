@@ -5,6 +5,7 @@ import socket
 import os
 import math
 import logging
+import glob
 import redis
 import asyncio
 import aioredis
@@ -310,8 +311,25 @@ class GuidingSystem():
         self.star_roi_ycenter_pix = (self.camera_xdim_pix/2 + 
                                      self.cam_decenter_x_pixels)
         
-        # Where we store our 
-        self.datapath = config['DATAPATH']
+        # store guider images in /tdata/tres/YYYY.MMDD/guider/
+        # YYYY.MMDD is the local date, starting at noon each day
+        night = datetime.datetime.utcnow() - datetime.timedelta(hours=7.0)
+        # before local noon, we use the previous day's directory
+
+        if night.hour < 12:
+            night = night - datetime.timedelta(days=1)
+        nightsubdir = night.strftime('%Y.%m%d')
+        self.datapath = os.path.join(config['DATAPATH'],nightsubdir,'guider')
+        if not os.path.exists(self.datapath): os.makedirs(self.datapath)
+
+        # initialize the sequence number to create unique filenames
+        # don't just start at image 000001 -- we can't overwrite images if we restart the guider
+        fitsfiles = glob.glob(os.path.join(self.datapath,'*.fits'))
+        maxseq = 0
+        for file in fitsfiles:
+            thisseq = int(os.path.basename(file).split('.')[0])
+            if thisseq > maxseq: maxseq = thisseq
+        self.seqnum=maxseq
         
         #Set default tracking setpoint in arcsec with respect to on-axis
         self.pid.setPoint((self.sci_fiber_y,self.sci_fiber_x))
@@ -380,8 +398,8 @@ class GuidingSystem():
 
         # How many pixels is the camera center displaced from on-axis
         # Use DS9 coords.  0,0 is in the lower left.
-        self.cam_decenter_x_pixels = float(config['CAM_DECENTER_X_PIX'])
-        self.cam_decenter_y_pixels = float(config['CAM_DECENTER_Y_PIX'])
+        self.cam_decenter_x_pixels = 1024. - float(config['CAM_DECENTER_X_PIX'])
+        self.cam_decenter_y_pixels = 1024. - float(config['CAM_DECENTER_Y_PIX'])
 
         # Rotation of camera with respect to telescope axes
         self.cam_rotation = float(config['CAM_ROTATION_DEGREES'])
@@ -501,7 +519,7 @@ class GuidingSystem():
             self.telescope = star_projector.StarProjector("./",
                                                           "star_projector.ini")
         elif (self.telescope_type == 'dfm'):
-            self.telescope = dfm_telescope.DFMTelescope(config)
+            self.telescope = dfm_telescope.DFMTelescope('./','telescope.ini')
 
 #-------------------------------------------------------------------------------
     def get_header(self):
@@ -550,26 +568,28 @@ class GuidingSystem():
         Populate a FITS header by probing objects and attach it to the image.
         Write the image to disk
         '''
+        filename = self.get_next_filename()
         self.logger.info("Saving " + filename)
+        print("Saving " + filename)
         hdr = self.get_header()
         hdu = fits.PrimaryHDU(self.image, header=hdr)
         hdulist = fits.HDUList([hdu])
         hdulist.writeto(filename, overwrite=overwrite)
-
+        return filename
+        
+    def get_next_filename(self):
+        objname = self.telescope.get_objname()
+        self.seqnum += 1
+        filename = os.path.join(self.datapath,str(self.seqnum).zfill(6)+'.'+objname+'.fits')
+        return filename
 #-------------------------------------------------------------------------------
     def save_image_in_thread(self,image):
         '''
         Construct a filename and start the thread that writes the image to disk
         Return thread descriptor so that code can join on the thread.
         '''
+        filename = self.get_next_filename()
         
-        objname = self.telescope.get_objname()
-        files = glob.glob(self.guider.datapath + "*.fits")
-        index = str(len(files)+1).zfill(4)
-        datestr = datetime.datetime.utcnow().strftime('%m%d%y') 
-        filename = self.guider.datapath + objname + '.' + datestr + \
-            '.guider.' + index + '.fits'
-
         # saving can go on in the background
         save_image_thread = threading.Thread(target=self.save_image,
                                              args=(filename,))
@@ -588,7 +608,7 @@ class GuidingSystem():
         self.logger.info("Frame %i" % (self.counter,))
         self.counter += 1
         self.dateobs = dateobs
-        self.fits_hdr = self.get_header()
+#        self.fits_hdr = self.get_header()
         self.image = image
         self.camera_xdim_pix = camera_xdim_pix
         self.camera_ydim_pix = camera_ydim_pix
@@ -720,7 +740,6 @@ class GuidingSystem():
         elif param == 1:
             self.loop_state = 'closed'
             res = self.event_sender.send({'loop_state':1})
-#            self.x_correction_arcsec += 3.0
             self.pid.reset()
             print('Closed loops')
         return(0)
@@ -776,9 +795,9 @@ class GuidingSystem():
             self.KP = param[0]
             self.KI = param[1]
             self.KD = param[2]
-            self.pid.setKp(np.array([self.KP,self.KP]))
-            self.pid.setKi(np.array([self.KI,self.KI]))
-            self.pid.setKd(np.array([self.KD,self.KD]))
+            self.pid.setPID(np.array([self.KP,self.KP]),
+                            np.array([self.KI,self.KI]),
+                            np.array([self.KD,self.KD]))
             self.event_sender.send({'loop_gains':(self.KP,self.KI,self.KD)})
 
 #-------------------------------------------------------------------------------
@@ -793,26 +812,22 @@ class GuidingSystem():
                                  self.plate_solve_running,
                                  self.wcs_hdr_dict,
                                  None,None,None)})
-
-        # Get this from telescope
-        coords = {'HA':0.0,
-                  'RA':266.5166725/15, 
-                  'Dec':-28.9665813,     
-                  'equinox':2000,   # not sure this is right (or relevant)
-                  'airmass':1.0,
-                  'zenith_distance':0.0,
-                  'azimuth': 0.0,
-                  'sidereal_time':'??',
-                  'date': datetime.datetime.utcnow()}
         
-        filename = "./images/platesolving/input_image.fits"
-        hdr = self.fits_hdr
-        hdr['RA'] = coords['RA']*15
-        hdr['DEC'] = coords['Dec']
-        hdr['PIXSCALE'] = self.arcsec_per_pixel
-        hdu = fits.PrimaryHDU(self.image,header=hdr)
-        hdulist = fits.HDUList([hdu])
-        hdulist.writeto(filename, overwrite=True)
+#        # Get this from telescope
+        coords = self.telescope.read_mount_coordinates()
+#        coords = {"RA":40.4638/15.0,"Dec":42.7809,'equinox':2000.0}
+#        filename = self.get_next_filename()
+#        hdr = self.fits_hdr
+#        hdr['RA'] = coords['RA']*15
+#        hdr['DEC'] = coords['Dec']
+#        hdr['PIXSCALE'] = self.arcsec_per_pixel
+#        hdu = fits.PrimaryHDU(self.image,header=hdr)
+#        hdulist = fits.HDUList([hdu])
+#        hdulist.writeto(filename, overwrite=True)
+
+        # this takes a bit longer, but gives a standard image with a full header 
+        filename = self.save_image(self.image)
+#        filename = '/home/tres/jan/tres-guider/images/platesolving/input_image.fits'
         
         res = self.wcs_acquire(filename,coords)
         self.plate_solve_success = res[0]
@@ -824,7 +839,7 @@ class GuidingSystem():
                                                   self.sci_fiber_ycenter_pix,
                                                   self.sci_fiber_xcenter_pix)
         print(science_fiber_sky)
-        target_skycoord = SkyCoord(hdr['RA'],hdr['DEC'],unit="deg",
+        target_skycoord = SkyCoord(coords['RA']*15.0,coords['Dec'],unit="deg",
                                    frame='fk5')
 #        print(science_fiber_sky)
 #        print(target_skycoord)
@@ -849,8 +864,8 @@ class GuidingSystem():
         dec_offset = param[1]
         print('Offsetting mount by RA("): %f DEC ("): %f' %
               (ra_offset,dec_offset))
-        if self.telescope_type == 'projector':
-            self.telescope.offset_target_object(-1*ra_offset*self.arcsec_per_pixel,-1*dec_offset*self.arcsec_per_pixel)
+        if self.telescope_type == 'projector' or self.telescope_type == 'dfm':
+            self.telescope.jog(ra_offset,dec_offset)
                                      
 #-------------------------------------------------------------------------------
     def set_framing_state(self,param):
@@ -882,6 +897,9 @@ class GuidingSystem():
     def set_cadence(self,param):
         print("Got message to set cadence to %f" % (param,))
         if param >= 0 and param < 1000:
+            if (self.cam.get_exposure_time() > float(param) -
+                self.cam.readout_time):
+                self.set_exposure_time(param-self.cam.readout_time)
             self.cam.set_frame_period(param)
             res = self.event_sender.send({'cadence':self.cam.get_frame_period()})
             res = self.event_sender.send({'exposure_time':self.cam.get_exposure_time()})            
@@ -1023,24 +1041,25 @@ class GuidingSystem():
         ''' Plate solve image to compute RA/Dec of pixel grid'''
         t0 = datetime.datetime.utcnow()
         
-        # get target position from TCS
-        targetra = mount_coords['RA']*15.0 # convert to degrees
-        targetdec = mount_coords['Dec']
-        equinox = mount_coords['equinox']
+#        # get target position from TCS
+#        targetra = mount_coords['RA']*15.0 # convert to degrees
+#        targetdec = mount_coords['Dec']
+#        equinox = mount_coords['equinox']
 
 #        # or do we want read_target_object_coordinates??
 #        # is there a practical difference?
 #        # we don't want to initiate large slews this way...
-#        coords = self.telescope.read_target_object_coordinates()
-#        targetra = coords['mean_ra']*15.0 # convert to degrees
-#        targetdec = coords['mean_dec']
-#        equinox = coords['equinox']
+        coords = self.telescope.read_target_object_coordinates()
+        targetra = coords['mean_ra']*15.0 # convert to degrees
+        targetdec = coords['mean_dec']
+        equinox = coords['equinox']
         
         # do a plate solve on the image
         # we could probably shave off a few seconds
         # if it worked with a star list, not an image...
-        (self.plate_solve_success,self.wcs_hdr_dict) = astrometry.astrometry(image_name,radius=0.1,
-                                                                   logger=self.logger, verbose=verbose)
+        (self.plate_solve_success,self.wcs_hdr_dict) = astrometry.astrometry(image_name,radius=0.5,\
+                                                                             parity='pos',downsample=4,\
+                                                                             logger=self.logger, verbose=verbose)
         if self.plate_solve_success:
             # identify target
             targetx,targety = astrometry.sky2pixels(self.wcs_hdr_dict,
@@ -1058,7 +1077,6 @@ class GuidingSystem():
             self.logger.info("WCS-based acquisition finished in " + str((datetime.datetime.utcnow() - t0).total_seconds()) + " seconds")
                 
             # slew telescope
-#            return self.acquire(targetx,targety, offset=offset, use_centroid=use_centroid)
             return (True,targety,targetx,self.wcs_hdr_dict)
         else:
             self.logger.error("WCS Solution failed -- try longer exposure or acquire by click")
@@ -1287,9 +1305,8 @@ class GuidingSystem():
         self.star_fwhm = 1.0+np.random.uniform(low=-0.1,high=0.1)
 
         if self.loop_state == 'closed':
-            self.tiptilt.move_north_east(
-                -0.8*self.y_mispointings_arcsec[self.ndx],
-                -0.8*self.x_mispointings_arcsec[self.ndx])
+            self.tiptilt.move_north_east(self.y_correction_arcsec,
+                                         self.x_correction_arcsec)
 
 #-------------------------------------------------------------------------------
     def perform_annulus_guiding(self,guiding_mode,image,
@@ -1396,13 +1413,20 @@ class GuidingSystem():
         h, w = self.image.shape
 #        shape = struct.pack('>II',h,w)
 #        encoded_img = self.telem_image.tobytes()
+        ENCODING = 'utf-8'
 
-        img_base64 = base64.b64encode(self.image.astype(np.uint16))
+        self.cadence = self.cam.get_frame_period()
+
+        if self.cadence < 1.0:
+            img_base64 = None
+            img_to_send = None
+        else:
+            img_base64 = base64.b64encode(self.image.astype(np.uint16))
+            img_to_send = img_base64.decode(ENCODING)
         sci_roi_base64 = base64.b64encode(self.sci_roi.astype(np.uint16))
         sky_roi_base64 = base64.b64encode(self.sky_roi.astype(np.uint16))
         star_roi_base64 = base64.b64encode(self.star_roi.astype(np.uint16))
         fsm_position = self.tiptilt.get_position()
-        ENCODING = 'utf-8'
 
         telem_struct = \
             json.dumps({'timestamp':\
@@ -1466,7 +1490,7 @@ class GuidingSystem():
                         'pixel_size_um':self.pixel_size_um,
                         'arcsec_per_um_guider_ccd':self.arcsec_per_um_guider_ccd,
                         'exposure_time':self.cam.get_exposure_time(),
-                        'cadence':self.cam.get_frame_period(),                        
+                        'cadence':self.cadence,                        
                         'sensor_temp':self.cam.get_sensor_temp(),
                         'sensor_temp_status':self.cam.get_sensor_temp_status(),
                         'frame_counter':self.cam.get_frame_counter(),
@@ -1480,7 +1504,7 @@ class GuidingSystem():
 #                        'fits_hdr':self.fits_hdr,
                         'wcs_hdr_dict': self.wcs_hdr_dict,
                         'stars':self.stars.tolist(),
-                        'image':img_base64.decode(ENCODING),
+                        'image':img_to_send,
                         'sci_roi':sci_roi_base64.decode(ENCODING),
                         'sky_roi':sky_roi_base64.decode(ENCODING),
                         'star_roi':star_roi_base64.decode(ENCODING)})
@@ -1508,7 +1532,7 @@ if __name__ == "__main__":
                            cam_type='andor',
                            tiptilt_type='pi',
                            calstage_type='simulated',
-                           telescope_type='projector')
+                           telescope_type='dfm')
     guider.start()
     loop = asyncio.get_event_loop()
     try:
