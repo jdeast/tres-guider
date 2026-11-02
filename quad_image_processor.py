@@ -63,16 +63,18 @@ class ImageProcessor():
         intensity_right = np.sum(data_sub[:,x3:x4])
         intensity_bottom = np.sum(data_sub[y1:y2,:])
         intensity_top = np.sum(data_sub[y3:y4,:])
-
+        total_inten = (intensity_left + intensity_right + 
+                       intensity_top + intensity_bottom)
+        
         xquad = ((intensity_right - intensity_left)/
                  (intensity_left+intensity_right)*(xlen/2.0)+x3)
         yquad = ((intensity_top - intensity_bottom)/
                  (intensity_bottom+intensity_top)*(ylen/2.0)+y3)
 
         tf = datetime.datetime.utcnow()
-        print((tf-t0).total_seconds())
+#        print((tf-t0).total_seconds())
     
-        return xquad,yquad
+        return xquad,yquad,total_inten
     
 #-------------------------------------------------------------------------------
     def annulus2cen(self,xin,yin,com=False,quad=False,sep=False):
@@ -103,11 +105,11 @@ class ImageProcessor():
         the power in 4 quadrants plus an empirical correction
         the input image should be a postage stamp around the fiber hole with one
         star '''    
-        xquad,yquad = self.get_quad_annulus(image)
+        xquad,yquad,inten = self.get_quad_annulus(image)
         #t0 = datetime.datetime.utcnow()
         x,y = self.annulus2cen(xquad,yquad,quad=True)
         #tf = datetime.datetime.utcnow()
         #print((tf-t0).total_seconds())
-        return np.transpose(np.vstack((x,y,1.0)))
+        return np.transpose(np.vstack((x,y,inten,0.0)))
     
 ################################################################################

@@ -8,26 +8,62 @@ import numpy as np
 import ipdb
 import csv
 import ipdb
+import sep_image_processor
 
 # use Gaia index files here:
 # http://data.astrometry.net/5000/
 # copied to /home/tres/gaia_index_files/
 # configured in /usr/etc/astrometry.cfg
 
+# native version of xylist2fits
+# basename.xy is a two-column ascii file of XY positions sorted by brightness
+# cmd = 'xylist2fits ' + basename '.xy ' + basename + '.xyls'
+def stars_to_xyls(stars, basename):
+    xylsfile = basename + '.xyls'
+
+    sorted = stars[:,2].argsort()
+    x = stars[sorted[::-1],0]
+    y = stars[sorted[::-1],1]
+
+    # write my own xyls file (20x faster than using built-in tool, no known downside)
+    colx = fits.Column(name='X', format='E', array=x)
+    coly = fits.Column(name='Y', format='E', array=y)
+    coldefs = fits.ColDefs([colx,coly])
+    hdu = fits.BinTableHDU.from_columns([colx,coly])
+    hdu.writeto(xylsfile,overwrite=True)
+
 def astrometry(imagename,rakey='RA',deckey='DEC',pixscalekey='PIXSCALE',\
                pixscale=None,quadlimit=[0.45,0.55],parity=None,\
-               downsample=None,radius=None,logger=None,verbose=False):
+               downsample=None,radius=None,use_sep=False,\
+               logger=None,verbose=False,vverbose=False):
 
     t0 = datetime.datetime.utcnow()    
     hdr = fits.getheader(imagename)
-
     basename = os.path.splitext(imagename)[0]
 
-    filearg = imagename
-        
     # This is the base command.
     # we're going to build it up according to the options specified
     cmd = 'solve-field'
+
+    # use SEP to extract stars and write my own xyls file
+    # could avoid writing/reading image to disk if we pass image/star coordinates/xyls file directly...
+    if use_sep:
+        image_processor = sep_image_processor.ImageProcessor('',logger=logger)
+        image = fits.getdata(imagename)
+        stars = image_processor.get_stars(image,minarea=25.0,threshold=3.0)
+        
+        #stars = centroid.get_stars_sep('',imagename,minarea=25,threshold=3.0)
+        stars_to_xyls(stars, basename)
+        filearg = basename + '.xyls'
+        width = float(hdr['NAXIS1'])
+        height = float(hdr['NAXIS2'])
+        cmd += ' --width ' + str(width) + ' --height ' + str(height)
+    else: filearg = imagename
+
+    # extra verbosity
+    if vverbose:
+        cmd += ' -v'
+        verbose=True
         
     try:
         if pixscale == None: pixscale = float(hdr[pixscalekey])
@@ -45,7 +81,7 @@ def astrometry(imagename,rakey='RA',deckey='DEC',pixscalekey='PIXSCALE',\
     if downsample != None: cmd += ' --downsample ' + str(downsample)
             
     # giving it an initial guess mildly speeds up the solution
-    if radius != None:
+    if radius != None and rakey in hdr.keys() and deckey in hdr.keys():
         try: ra = float(hdr[rakey])
         except: ra = ten(hdr[rakey])*15.0
         
@@ -79,11 +115,16 @@ def astrometry(imagename,rakey='RA',deckey='DEC',pixscalekey='PIXSCALE',\
     if not verbose:
         cmd += ' >/dev/null 2>&1'
     if logger != None: logger.info("platesolving command is "+cmd)
-    os.system(cmd)
-    
+#    os.system(cmd)  # cpulimit doesn't seem to be respected
+    # force timeout using subprocess instead
+    try:
+        subprocess.check_output(cmd,shell=True,timeout=5)
+    except subprocess.TimeoutExpired as e:
+        pass
+
     # insert the solution into the original image
     f = fits.open(imagename, mode='update')
-    if os.path.exists(basename + '.new'):
+    if os.path.exists(basename + '.wcs'):
 
         # preserve original solution
         try:
@@ -97,7 +138,7 @@ def astrometry(imagename,rakey='RA',deckey='DEC',pixscalekey='PIXSCALE',\
             pass
 
         # copy the WCS solution to the file
-        newhdr = fits.getheader(basename + '.new')
+        newhdr = fits.getheader(basename + '.wcs')
         f[0].header['WCSSOLVE'] = 'True'
         f[0].header['WCSAXES'] = newhdr['WCSAXES']
         f[0].header['CTYPE1'] = newhdr['CTYPE1']
@@ -177,29 +218,35 @@ def astrometry(imagename,rakey='RA',deckey='DEC',pixscalekey='PIXSCALE',\
                         'BP_1_0': newhdr['BP_1_0'],
                         'BP_1_1': newhdr['BP_1_1'],
                         'BP_2_0': newhdr['BP_2_0']}
+        # save the changes
+        f.flush()
+        f.close()
         success = True
         if logger != None:
             logger.info("WCS Solution succeeded")
     else:
-        f[0].header['WCSSOLVE'] = 'False'
-        wcs_hdr_dict = {'WCSSOLVE': 'False'}
-        success = False
+        try:
+            f[0].header['WCSSOLVE'] = 'False'
+            wcs_hdr_dict = {'WCSSOLVE': 'False'}
+            success = False
+            if logger != None:
+                logger.info("WCS Solution failed")
+        except Exception as e:
+            print(e)
+
+
+    try:
+        # clean up extra files
+        extstodelete = ['-indx.png','-indx.xyls','-ngc.png','-objs.png','.axy',
+                        '.corr','.match','.new','.rdls','.solved','.wcs']
+        for ext in extstodelete:
+            if os.path.exists(basename + ext):
+                os.remove(basename + ext)
+
         if logger != None:
-            logger.info("WCS Solution failed")
-
-    # save the changes
-    f.flush()
-    f.close()
-    
-    # clean up extra files
-    extstodelete = ['-indx.png','-indx.xyls','-ngc.png','-objs.png','.axy',
-                    '.corr','.match','.new','.rdls','.solved','.wcs']
-    for ext in extstodelete:
-        if os.path.exists(basename + ext):
-            os.remove(basename + ext)
-
-    if logger != None:
-        logger.info("Done in " + str((datetime.datetime.utcnow()-t0).total_seconds()) + " seconds")
+            logger.info("Done in " + str((datetime.datetime.utcnow()-t0).total_seconds()) + " seconds")
+    except Exception as e:
+        print(e)
     return (success,wcs_hdr_dict)
 
 '''

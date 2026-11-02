@@ -130,6 +130,7 @@ class TipTilt:
         tilt_cmd = (self.steps_per_arcsec_tilt *
                     (north_arcsec * math.sin(self.theta) +
                      east_arcsec * math.cos(self.theta)))
+        print(north_arcsec,east_arcsec,tip_cmd,tilt_cmd)
         
         return(tip_cmd,tilt_cmd)
 
@@ -191,6 +192,10 @@ class TipTilt:
         (self.position['N'],self.position['E']) = self.mirror_to_sky(tip_cmd,
                                                                      tilt_cmd)
 
+        print("Moved mirror A: %f B: %f N: %f E: %f" % (self.position['A'],
+                                                        self.position['B'],
+                                                        self.position['N'],
+                                                        self.position['E']))
         # wait for move?
         
         # make sure it moved where we wanted
@@ -222,6 +227,17 @@ class TipTilt:
         return self.move_tip_tilt(tip_cmd,tilt_cmd)
 
 
+    def inject_offset_north_east(self,north_offset,east_offset):
+        '''Not working yet'''
+        (tip_offset,tilt_offset) =  self.sky_to_mirror(north_offset,
+                                                       east_offset)
+        current_tip = self.position['A']
+        current_tilt = self.position['B']
+        print("current_tip: %f tip_offset: %f current_tilt: %f tilt_offset: %f" %(current_tip,tip_offset,current_tilt,tilt_offset))
+        self.move_tip_tilt(current_tip + tip_offset,
+                           current_tilt + tilt_offset)
+        
+    
     # qPOS doesn't seem to work, but it seems to move
     # keep track of the position ourselves
     def get_position(self):
@@ -256,7 +272,7 @@ if __name__ == '__main__':
     parser.add_argument('--move4'  , dest='move4'  , action='store_true', default=False, help='Move the tip/tilt stage to the (2,0) extreme')
     opt = parser.parse_args()
     
-    if socket.gethostname() == 'tres-guider':
+    if socket.gethostname() == 'tres-new-guider':
         base_directory = '/home/tres/jan/tres-guider'
     else:
         print('unsupported system')

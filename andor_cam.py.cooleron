@@ -1,0 +1,605 @@
+#!/usr/bin/python3
+
+import sys
+import socket
+import os
+from configobj import ConfigObj
+import logging
+import threading
+import math
+import datetime
+import utils
+import numpy as np
+import select
+import time
+from scipy.ndimage.filters import gaussian_filter
+from math import ceil
+from pyAndorSDK3 import AndorSDK3
+from collections import OrderedDict, deque
+import ipdb
+#from Queue import Queue
+
+################################################################################
+class AndorGuiderCam(threading.Thread):
+    def __init__(self,base_directory,config_file,new_image_callback,
+                 logger=None):
+        """Initialize the Andor camera with default configuration"""
+
+        threading.Thread.__init__(self)
+        # set up the log file
+        if logger == None:
+            self.logger = utils.setup_logger(base_directory + '/log/',
+                                             'zyla')
+        else:
+            self.logger = logger
+
+        config_file = base_directory + '/config/' + config_file
+        if os.path.exists(config_file):
+            config = ConfigObj(config_file)
+        else:
+            logging.error('Config file not found: ('
+                          + config_file + ')')
+            sys.exit()
+
+        self.sdk3 = AndorSDK3()
+        self.imager = self.sdk3.cameras[0].camera()
+#        self.cmd_q = Queue()
+#        print(self.imager.options_TemperatureControl)
+        self.terminate = False  # Should we exit this thread
+        self.camera_xdim_pix = int(config['CAM_XDIM'])
+        self.camera_ydim_pix = int(config['CAM_YDIM'])
+        if self.imager.SensorWidth != self.camera_xdim_pix:
+            print("Sensor X size mismatch %i %i" % (self.camera_xdim_pix,
+                                                    self.imager.SensorWidth))
+            exit()
+            
+        if self.imager.SensorWidth != self.camera_ydim_pix:
+            print("Sensor Y size mismatch %i %i" % (self.camera_ydim_pix,
+                                                    self.imager.SensorHeight))
+            exit()
+
+            
+        self.camera_xcenter_pix = (float(self.camera_xdim_pix)/2) - 0.5
+        self.camera_ycenter_pix = (float(self.camera_ydim_pix)/2) - 0.5
+        
+        self.pixel_size_um = float(config['CAM_PIXEL_SIZE_UM'])
+        if self.imager.PixelHeight != self.pixel_size_um:
+            print("Pixel size mismatch %f %f" % (self.pixel_size_um,
+                                                 self.imager.PixelHeight))
+            exit()
+        if self.imager.PixelWidth != self.pixel_size_um:
+            print("Pixel size mismatch %f %f" % (self.pixel_size_um,
+                                                 self.imager.PixelWidth))
+            exit()
+
+        self.model = config['MODEL']
+        self.sn = config['SN']
+#        self.imager.LogLevel ='VERB'
+        self.imager.SensorCooling = True
+        self.imager.FanSpeed == "On"
+        self.imager.CycleMode == "Continuous"
+        self.imager.TriggerMode == "Software"
+        self.imager.ElectronicShutteringMode == "Rolling"
+        self.imager.SpuriousNoiseFilter = True
+        self.imager.StaticBlemishCorrection = False
+        self.imager.pixelEncoding = 'Mono16'
+        self.buffer_num_frames = 25
+#        self.imager.BitDepth = '16'
+#        self.imager.PreAmpGainControl = '16-bit (low noise & high well capacity)'
+        self.logger.info("Bit depth:" + str(self.imager.BitDepth))
+        self.logger.info("Shuttering mode: " + str(self.imager.ElectronicShutteringMode))
+        self.logger.info("PreAmpGain Control:" + str(self.imager.SimplePreAmpGainControl))
+        self.done_framing = True
+        print("Does camera support arbitrary ROIs:",self.imager.FullAOIControl)
+        print("Pixel readout rate:",self.imager.PixelReadoutRate)
+        print("Readout time:",self.imager.ReadoutTime)
+        self.frame_counter = 0
+        print("Current sensor temperature is %f" %
+              (self.imager.SensorTemperature,))
+        print(self.imager.TemperatureStatus)
+        
+        
+        self.new_image_callback = new_image_callback
+        self.framing = False
+        self.x1 = 0
+        self.x2 = self.camera_xdim_pix
+        self.y1 = 0
+        self.y2 = self.camera_ydim_pix
+
+        self.xbin = 1
+        self.ybin = 1
+
+        self.readout_time = 0.02
+        self.set_roi(self.y1,self.x1,self.y2,self.x2)
+        self.logger.info("Setting frame rate to 1 Hz")
+        self.set_gain(1.0)
+        self.logger.info("Setting exposure time")
+        self.set_frame_period(1.0)        
+        self.set_exposure_time(0.98)
+
+        # Hardcoded here.  Should match values in tres_guider.ini
+        # These don't belong here since they are optics and system related but
+        # we temporarily need them here to create simulated stars injected
+        # into the image
+        self.arcsec_per_um_at_ccd = 0.02477
+        self.hole_width_arcsec = 2.44  # arcseconds
+        
+        # Used for creating a simulated image
+        self.arcsec_per_pix = self.arcsec_per_um_at_ccd * self.pixel_size_um
+        
+
+        # Create three simulated stars
+        self.star_xpositions = [0.0,-30.0,0.0]   # arcsec from center
+        self.star_ypositions = [0.0,-30.0,-30.0] # arcsec from center
+        self.star_fluxes = [1e5,0.5e5,1.5e5]
+        self.star_fwhm = 1.0
+        self.noise = 0.0
+        self.background = 0
+        self.jitter_amplitude = 0.0 # Amplitude to inject into integrator "
+        self.jitter_gain = 0.0      # Gain term of integrator
+        self.x_jitter_offset = 0.0  # arcsec initial offsets
+        self.y_jitter_offset = 0.0  # Null out initial offsets
+
+        self.simulated_fsm_x_correction = 0. # arcsec
+        self.simulated_fsm_y_correction = 0.
+
+        self.hole_width_pix = self.um_to_pix(self.hole_width_arcsec /
+                                             self.arcsec_per_um_at_ccd)
+        
+        xwidth = self.x2 - self.x1
+        ywidth = self.y2 - self.y1
+        
+        hole_mask = np.zeros((ywidth,xwidth),dtype=np.float64) + 1.0
+        hole_X1, hole_X2 = np.mgrid[0:ywidth,0:xwidth]
+        xdist_from_hole = (hole_X2 - (xwidth/2) + 0.5)
+        ydist_from_hole = (hole_X1 - (ywidth/2) + 0.5)
+
+        dist_from_hole = ((xdist_from_hole*xdist_from_hole) +
+                          (ydist_from_hole * ydist_from_hole))**0.5
+        inside_hole = np.where(dist_from_hole < self.hole_width_pix/2)
+        hole_mask[inside_hole] = 0
+        self.hole_mask = gaussian_filter(hole_mask,sigma=1)
+
+        
+#-------------------------------------------------------------------------------
+    def __del__(self):
+        """Close camera and free resources"""
+        self.imager.SensorCooling = False
+        pass
+
+#-------------------------------------------------------------------------------
+    def get_camera_dims(self):
+        return(self.camera_ydim_pix,self.camera_xdim_pix)
+    
+#-------------------------------------------------------------------------------
+    def set_gain(self,gain):
+        self.gain = gain
+        self.logger.info("Not supported by the Zyla")
+
+#-------------------------------------------------------------------------------
+    def set_roi(self,y1,x1,y2,x2):
+        """Set the region of interest readout
+
+        arguments:
+        y1: (int) top left corner of image y coordinate
+        x1: (int) top left corner of image x coordinate
+        y2: (int) bottom right corner of image y coordinate        
+        x2: (int) bottom right corner of image x coordinate
+        """
+        
+        self.x1 = int(x1)
+        self.x2 = int(x2)
+        self.y1 = int(y1)
+        self.y2 = int(y2)
+        self.imager.AOIWidth = self.x2 - self.x1
+        self.imager.AOILeft = self.x1 + 1
+        self.imager.AOIHeight = self.y2 - self.y1
+        self.imager.AOITop = self.y1 + 1 
+        
+        self.logger.info("Setting camera ROI to x1: %i,y1: %i,x2: %i,y2: %i" %
+                         (self.x1,self.y1,self.x2,self.y2))
+
+#-------------------------------------------------------------------------------
+    def get_roi(self):
+        """Get the current region of interest
+        """
+        self.x1 = self.imager.AOILeft - 1
+        self.y1 = self.imager.AOITop - 1
+        self.x2 = self.imager.AOIWidth + self.x1
+        self.y2 = self.imager.AOIHeight + self.y1
+        
+        return(self.y1,self.x1,self.y2,self.x2)
+
+#-------------------------------------------------------------------------------
+    def set_binning(self,ybin,xbin):
+        """Set the camera binning
+        ybin: Binning factor for y dimension
+        xbin: Binning factor for x dimension
+        """
+
+        self.imager.AOIHBin = xbin
+        self.imager.AOIVBin = ybin
+        
+        self.xbin = xbin
+        self.ybin = ybin
+
+#-------------------------------------------------------------------------------
+    def get_binning(self,ybin,xbin):
+        """Get the camera binning
+        """
+        
+        return(self.imager.AOIVBin,self.imager.AOIHBin)
+        
+#-------------------------------------------------------------------------------
+    def get_camsize(self):
+        return(self.imager.PixelHeight,self.imager.PixelWidth)
+
+#-------------------------------------------------------------------------------
+    def get_sensor_temp(self):
+        return(self.imager.SensorTemperature)
+
+#-------------------------------------------------------------------------------
+    def get_sensor_temp_status(self):
+        return(self.imager.TemperatureStatus)   
+
+#-------------------------------------------------------------------------------
+    def get_frame_counter(self):
+        return(self.frame_counter)   
+    
+#-------------------------------------------------------------------------------
+    def pix_to_um_from_center(self,y,x):
+        '''
+        Takes an x and y pixel coordinate and returns the offset from the
+        center of the camera in microns
+        '''
+        return((float(y) - self.camera_ycenter_pix)*self.pixel_size_um,
+               (float(x) - self.camera_xcenter_pix)*self.pixel_size_um)
+
+#-------------------------------------------------------------------------------
+    def um_from_center_to_pix(self,y,x):
+        '''
+        Takes a distance in microns from the center of the camera and returns
+        corresponding pixel coordinates
+        '''
+        return((float(y)/self.pixel_size_um)+self.camera_ycenter_pix,
+               (float(x)/self.pixel_size_um)+self.camera_xcenter_pix)
+
+#-------------------------------------------------------------------------------
+    def um_to_pix(self,um):
+        return(float(um)/self.pixel_size_um)
+
+#-------------------------------------------------------------------------------
+    def pix_to_um(self,pix):
+        return(float(pix)*self.pixel_size_um)    
+    
+#-------------------------------------------------------------------------------
+    def set_frame_period(self,seconds):
+        """Set the frame period of camera readouts
+
+        arguments:
+        seconds: (float) time between successive readouts of the camera
+        """
+        self.imager.FrameRate = 1./seconds
+        self.frame_period = seconds
+
+#-------------------------------------------------------------------------------
+    def get_frame_period(self):
+        """Set the frame period of camera readouts
+
+        arguments:
+        seconds: (float) time between successive readouts of the camera
+        """
+        self.logger.info("Frame period is set to %f" %
+                         (1./self.imager.FrameRate,))
+        return(1./self.imager.FrameRate)
+    
+#-------------------------------------------------------------------------------
+    def set_exposure_time(self,seconds):
+        """Set the exposure time of camera
+
+        arguments:
+        seconds: (float) duration of exposure time. Must be less than the
+        frame period as dicated by the camera timing
+        """
+
+        self.exposure_time = seconds        
+        self.imager.ExposureTime = self.exposure_time
+        
+#-------------------------------------------------------------------------------
+    def get_exposure_time(self):
+        """Get the exposure time of camera frames
+
+        arguments:
+        seconds: (float) time of camera exposure
+        """
+        return(self.imager.ExposureTime)
+
+#-------------------------------------------------------------------------------
+    def get_pixel_size(self):
+        return(self.imager.PixelWidth)
+    
+#-------------------------------------------------------------------------------
+    def populate_header(self,hdr):
+        ''' Fill in the camera related FITS header fields'''
+        
+        hdr['EXPTIME'] = (self.exposure_time,'Exposure time (s)')
+        datasec = '[' + str(self.x1) + ':' + str(self.x2) + ',' + \
+            str(self.y1) + ':' + str(self.y2) + ']'        
+        hdr['DATASEC'] = (datasec,"Region of CCD read")
+        
+        hdr['CCDSUM'] = (str(self.xbin) + ' ' + str(self.ybin),
+                         'CCD on-chip summing')
+
+        
+        hdr['GAIN'] = (self.gain,'electrons/ADU')
+        hdr['CAMMOD'] = (self.model,'Model of the acquisition camera')
+        hdr['CAMERASN'] = (self.sn,'Serial number of the acquisition camera')
+        hdr['CCD-TEMP'] = (-999,'CCD Temperature (C)') # do we have this?
+    
+#-------------------------------------------------------------------------------
+    def set_callback(self,new_image_callback):
+        """Set a callback function for incoming images"""
+        self.new_image_callback = new_image_callback        
+        pass
+
+#-------------------------------------------------------------------------------
+    def clear_callback(self):
+        '''Remove callback function for incoming images'''
+        self.new_image_callback = None
+        pass
+
+#-------------------------------------------------------------------------------
+    def get_hole_mask(self):
+        '''
+        Simulate the loss of light from the camera due to the fiber-coupling
+        hole drilled into the turning mirror.
+        '''
+
+        return(self.hole_mask[self.y1:self.y2,self.x1:self.x2])
+
+#-------------------------------------------------------------------------------
+    def set_simulated_fsm_correction(self,y,x):
+        '''
+        When simulating the camera image, use this function to set the simulated FSM correction
+        tip/tilt so that the simulated stars shift according to the FSM action
+        '''
+        self.simulated_fsm_x_correction = x
+        self.simulated_fsm_y_correction = y
+
+
+#-------------------------------------------------------------------------------
+    def simulate_star_image(self,ypos,xpos,flux,fwhm,background=300.0,noise=0.0,
+                            jitter=0.0):
+        ''' 
+        This creates a simple simulated image of a star field
+        The idea is to be able to test guide performance without being on sky
+        xpos -- an array of X centroids of the stars (arcsec from cam center)
+        ypos -- an array of Y centroids of the stars (arcsec from cam center)
+        flux -- an array of fluxes of the stars (electrons)
+        fwhm -- the fwhm of the stars (arcsec)
+        background -- the sky background of the image
+        noise -- readnoise of the image
+        jitter -- amplitude of jitter injected into jitter integrator
+        '''
+        
+        xwidth = self.camera_xdim_pix 
+        ywidth = self.camera_ydim_pix
+        self.image = np.zeros((ywidth,xwidth),dtype=np.float64) + \
+            background + np.random.normal(scale=noise,size=(ywidth,xwidth))
+        
+        # add a guide star?
+        sigma = fwhm / self.arcsec_per_pix
+        mu = 0.0
+        
+        boxsize = math.ceil(sigma * 10.0)
+        
+        # make sure it's even to make the indices/centroids come out right
+        if (boxsize % 2 == 1):
+            boxsize += 1 
+        
+        xgrid,ygrid = np.meshgrid(np.linspace(-boxsize,boxsize,2*boxsize+1),
+                                  np.linspace(-boxsize,boxsize,2*boxsize+1))
+        d = np.sqrt(xgrid*xgrid+ygrid*ygrid)
+        g = np.exp(-((d-mu)**2 / (2.0 * sigma**2)))
+        g = g/np.sum(g) # normalize the gaussian
+
+        self.x_jitter_offset += (self.jitter_gain *
+                                 (jitter / self.arcsec_per_pix) *
+                                 np.random.randn())
+        self.y_jitter_offset += (self.jitter_gain *
+                                 (jitter / self.arcsec_per_pix) *
+                                 np.random.randn())
+
+        # add each of the stars
+        for ii in range(len(xpos)):
+
+            xii = int(np.round(xpos[ii]/self.arcsec_per_pix +
+                               self.camera_xcenter_pix + \
+                               (self.x_jitter_offset +
+                                self.simulated_fsm_x_correction) /
+                               self.arcsec_per_pix))
+            yii = int(np.round(ypos[ii]/self.arcsec_per_pix +
+                               self.camera_ycenter_pix + \
+                               (self.y_jitter_offset +
+                                self.simulated_fsm_y_correction) /
+                               self.arcsec_per_pix))
+            
+            # make sure the stamp fits on the image (if not, truncate)
+            if (xii >= boxsize):
+                x1 = xii - boxsize
+                x1stamp = 0
+            else:
+                x1 = 0
+                x1stamp = boxsize - xii
+                
+            if (xii <= (xwidth - boxsize)):
+                x2 = xii + boxsize + 1
+                x2stamp = 2 * boxsize + 1
+            else:
+                x2 = xwidth
+                x2stamp = xwidth - xii + boxsize
+                
+            if (yii >= boxsize):
+                y1 = yii-boxsize
+                y1stamp = 0
+            else:
+                y1 = 0
+                y1stamp = boxsize-yii
+                
+            if (yii <= (ywidth-boxsize)):
+                y2 = yii + boxsize + 1
+                y2stamp = 2 * boxsize + 1
+            else:
+                y2 = ywidth
+                y2stamp = ywidth - yii + boxsize
+            
+            if ((y2-y1) > 0 and (x2-x1) > 0):
+                # normalize the star to desired flux
+                star = g[y1stamp:y2stamp,x1stamp:x2stamp]*flux[ii]
+
+                # add Poisson noise; convert to ADU
+                noise = np.random.normal(size=(y2stamp-y1stamp,
+                                               x2stamp-x1stamp))
+                noisystar = (star + np.sqrt(star) * noise) / self.gain
+
+                # add the star to the image
+                self.image[y1:y2,x1:x2] += noisystar
+            else:
+                pass
+#                self.logger.warning("star off image (" + str(xii) + "," +
+#                                      str(yii) + "); ignoring")
+                
+        # now convert to 16 bit int
+        self.image = self.image.astype(np.uint16)
+
+        self.image = self.image * self.hole_mask
+        neg_pix = np.where(self.image < 0)
+        if len(neg_pix) > 0:
+            self.image[neg_pix] = 0
+        h, w = self.image.shape
+        
+        return(self.image)
+    
+#-------------------------------------------------------------------------------
+    def start_framing(self):
+        self.framing = True
+        self.done_framing = False
+        circ_buf = True
+        series = deque()
+        self.imager.TriggerMode = "Internal"
+        self.imager.CycleMode = "Continuous"
+        self.imager.configure()
+        imgsize = self.imager.ImageSizeBytes
+        print("Image size in bytes:",imgsize)
+        for i in range(0,self.buffer_num_frames):
+            self.imager._queue_buffer(imgsize)
+        print("Starting framing")
+        self.imager.AcquisitionStart()
+        print("Started acquisition")
+        frame = 0
+        while self.framing == True:
+            try:
+                # try:
+                #     res = self.cmd_q.get(False)
+                #     if res[0] == "exposure_time":
+                #         self.imager.ExposureTime = res[1]
+                #     elif res[0] == "cadence":
+                #         self.imager.FrameRate = 1./res[1]
+                # except Queue.Empty:
+                #     pass
+                timeout = max(5000, ceil(5 * 1000 / self.imager.FrameRate))
+                if self.imager._queued_buffers.qsize() == 0:
+                    if circ_buf :
+                        self.imager.queue(series.popleft()._np_data, imgsize)
+#                print("Triggered camera");
+#                self.imager.SoftwareTrigger()
+                acq = self.imager._acquire(timeout)
+                series.append(acq)
+                print("Got frame %i" % (frame,))
+                self.frame_counter += 1
+                self.dateobs = datetime.datetime.utcnow()
+                roi = np.frombuffer(acq._np_data,dtype=np.uint16).reshape(
+                    (self.imager.AOIHeight,self.imager.AOIWidth))
+                if (self.new_image_callback != None):
+                    self.new_image_callback(self.dateobs,self.camera_ydim_pix,
+                                            self.camera_xdim_pix,self.y1,
+                                            self.x1,self.y2,self.x2,roi)
+
+                frame += 1
+            except Exception as e:
+                if frame != None:
+                    print()
+                    print("Error on frame "+str(frame))
+                    self.logger.error(e)
+                self.imager.AcquisitionStop()
+                self.imager._flush()
+                if self.framing == True:
+                    try:
+                        self.imager.AcquisitionStart()
+                    except Exception as e2:
+                        print("Error restarting framing after camera error")
+                        self.logger.error(e2)
+                        raise(e2)
+            
+        self.imager.AcquisitionStop()
+        self.imager._flush()
+        self.done_framing = True
+        print("Finished framing")
+        
+#-------------------------------------------------------------------------------
+    def run(self):
+        '''Start simulated camera readout of frames cv, and deliver to 
+        guider callback function
+        '''
+        self.logger.info("Staring andor camera thread and framing")
+        self.frame_counter = 0
+
+        self.start_framing()            
+        while self.terminate == False:
+            time.sleep(0.01)
+        print("Exiting camera thread")
+        
+#-------------------------------------------------------------------------------
+    def stop_framing(self):
+        '''Cleanup operations'''
+        self.logger.info("Stopping andor camera framing")
+        self.framing = False
+        while self.done_framing == False:
+            time.sleep(0.1)
+        self.frame_counter = 0
+
+#-------------------------------------------------------------------------------
+    def exit(self):
+        self.logger.info("Andor camera thread terminating")
+        self.framing = False
+        self.imager.AcquisitionStop()
+        self.imager._flush()
+        self.terminate = True
+
+################################################################################
+def test_callback(dateobs,camera_ydim_pix,camera_xdim_pix,y1,x1,y2,x2,roi):
+    print("Got frame")
+
+if __name__ == "__main__":
+    if socket.gethostname() == 'tres-guider':
+        base_directory = '/home/tres/jan/tres-guider'
+    elif socket.gethostname() == 'core2duo':
+        base_directory = '/home/jkansky/tres-guider-jan'        
+    elif socket.gethostname() == 'Jason-THINK':
+        base_directory = 'C:/tres-guider/'
+    else:
+        base_directory = './'
+        
+    config_file = 'zyla.ini'
+    
+    cam = AndorGuiderCam(base_directory,config_file,new_image_callback=None)
+
+    print(cam.get_roi())
+    print(cam.get_frame_period())
+    print(cam.get_exposure_time())
+    
+    cam.start()
+    while True:
+        time.sleep(1)
+    cam.stop_framing()
+    cam.exit()

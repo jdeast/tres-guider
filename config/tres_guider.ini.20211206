@@ -1,0 +1,60 @@
+#DATAPATH='/home/tres/jan/tres-guider/data/'
+DATAPATH='/tdata/tres/'
+
+#All units in arcsec unless otherwise specified
+#ARCSEC_PER_UM_GUIDER_CCD = 0.02477 # from sagi's 11/19/2018 email
+ARCSEC_PER_UM_GUIDER_CCD = 0.02533 # measured on 2021/10/25
+#ARCSEC_PER_UM_GUIDER_CCD = 0.02 # from a rough scaling of hole size on Zyla (6.5 um pixels) -- seems to confirm 0.02477"/um
+
+# Useful for scaling physical sizes on the hole mirror to the guider sensor
+GUIDER_MAGNIFICATION = 0.563
+
+GAIN = 1 # placeholder (dynamic!?)
+GUIDING_TOLERANCE = 30.0   # Pull in stars closer than this distance in arcsec
+
+
+SCI_FIBER_X = 0.  # Let's define the axis to be when we are center on the fiber
+SCI_FIBER_Y = 0. 
+
+SCI_FIBER_XWIDTH = 2.3  # 2.3 arcsec bucket projected fiber core size
+SCI_FIBER_YWIDTH = 2.3	
+
+#SKY_FIBER_Y = 0.209
+#SKY_FIBER_X = -63.91  # 4585 um offset according to Jason Eastman
+
+SKY_FIBER_Y = 0.209
+SKY_FIBER_X = -61.34  # Updated based on observations JEK
+
+
+SKY_FIBER_XWIDTH = 2.3
+SKY_FIBER_YWIDTH = 2.3
+
+SKY_HOLE_XWIDTH = 2.44 # Hole is larger than fiber
+SKY_HOLE_YWIDTH = 2.44
+
+SCI_HOLE_XWIDTH = 2.44 # Hole is larger than fiber
+SCI_HOLE_YWIDTH = 2.44
+
+#1035.456
+#988.16887
+CAM_DECENTER_X_PIX = 1037.4235 # Cam is displaced this many pixels in x, ds9 coords
+CAM_DECENTER_Y_PIX = 909.79079 # Cam is displaced this many pixels in y, ds9 coords
+
+CAM_ROTATION_DEGREES = 0.0 # Cam rotation relative to sky in degrees
+
+CAM_FLIP_X = 1.0   # Used to flip about x axis of camera, 1 or -1
+CAM_FLIP_Y = 1.0   # Used to flip about y axis of camera, 1 or -1
+
+ROI_SIZE_ARCSEC = 10  # ROI readout window during guiding in arcseconds
+
+KP = 0.5
+KI = 0.2
+KD = 0.0
+
+Dband = 0.0
+Imax = 2000
+Corr_max = 60
+REDIS_SERVER='flwo60'
+REDIS_PORT=6380
+
+

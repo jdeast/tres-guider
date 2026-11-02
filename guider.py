@@ -215,8 +215,8 @@ class imager:
 
 if __name__ == '__main__':
 
-    if socket.gethostname() == 'tres-guider':
-        base_directory = '/home/tres/tres-guider'
+    if socket.gethostname() == 'tres-new-guider':
+        base_directory = '/home/tres/jan/tres-guider'
     elif socket.gethostname() == 'Jason-THINK':
         base_directory = 'C:/tres-guider/'
     else:

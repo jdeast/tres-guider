@@ -470,7 +470,7 @@ class StarProjector:
 
 if __name__ == '__main__':
 
-    if socket.gethostname() == 'tres-guider':
+    if socket.gethostname() == 'tres-new-guider':
         # guider machine (linux)
         base_directory = '/home/tres/jan/tres-guider'
     elif socket.gethostname() == 'Jason-THINK':

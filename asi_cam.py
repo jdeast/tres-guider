@@ -504,8 +504,8 @@ class ASIGuiderCam(threading.Thread):
 
 ################################################################################
 if __name__ == "__main__":
-    if socket.gethostname() == 'tres-guider':
-        base_directory = '/home/tres/tres-guider'
+    if socket.gethostname() == 'tres-new-guider':
+        base_directory = '/home/tres/jan/tres-guider'
     elif socket.gethostname() == 'core2duo':
         base_directory = '/home/jkansky/tres-guider-jan'        
     elif socket.gethostname() == 'Jason-THINK':

@@ -151,6 +151,6 @@ class ImageProcessor():
                              ', hole_size='  + str(best.x[7]))
         tf = datetime.datetime.utcnow()
         print((tf-t0).total_seconds())
-        return(np.transpose(np.vstack((best.x[0], best.x[1], best.x[4]))))
+        return(np.transpose(np.vstack((best.x[0], best.x[1], best.x[4],best.x[2]))))
 
 ################################################################################

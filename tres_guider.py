@@ -2,6 +2,7 @@
 
 import time
 import socket
+import sys
 import os
 import math
 import logging
@@ -39,6 +40,7 @@ import cv2_image_processor
 import sep_image_processor
 import quad_image_processor
 import model_image_processor
+import com_image_processor
 
 #import centroid_image_processor as image_processor
 
@@ -60,7 +62,7 @@ class TelemetrySender():
 
 #-------------------------------------------------------------------------------
     def send(self,key,data):
-        print(key,len(data))
+#        print(key,len(data))
         res = self.redis.publish(key,data)
         
 ################################################################################
@@ -202,7 +204,7 @@ class WeatherStation():
 ################################################################################
 class GuidingSystem():
     def __init__(self,base_directory,cam_type='simulated',
-                 tiptilt_type='pi',
+                 tiptilt_type='simulated',
                  calstage_type='simulated',
                  telescope_type='simulated'):
         '''
@@ -340,33 +342,56 @@ class GuidingSystem():
         # Set initial guiding offset to 0" in both axes
         self.offset = (0.0,0.0)
 
+        self.telescope_target_ra = 0.0
+        self.telescope_target_dec = 0.0
         # Default to zero until computed
         self.peak_counts = 0
 
+        self.threshold = 3.0
+        self.turbo_mode = "on"
+        self.apply_turbo = False
+        
+        self.focus_start = 2600
+        self.focus_start = 3600
+        self.num_focus_steps = 7
+        self.current_focus_step = 0
+        self.focus_sweep_running = False
+        self.focus_sweep_state = "Off"
+        
+        self.is_cal_stage_moving = False
+
+        
         # For each possible incoming command, define a handler.
         self.command_tree = {'loop_state':self.set_loop_state,
                              'framing':self.set_framing_state,
                              'exposure_time':self.set_exposure_time,
                              'cadence':self.set_cadence,
+                             'cam_exp_cadence':self.set_cam_exp_cadence,
                              'toggle_framing':self.toggle_framing_state,
                              'roi':self.set_roi,
                              'star_position':self.set_star_roi,
                              'guiding_mode':self.set_guiding_mode,
                              'fsm_angle':self.set_fsm_angle,
                              'offset_angle':self.set_offset_angle,
+                             'offload_angle':self.apply_offload_angle,
                              'loop_gains':self.set_loop_gains,
+                             'threshold':self.set_threshold,
+                             'turbo_mode':self.set_turbo_mode,
                              'plate_solve':self.on_plate_solve,
-                             'offset_mount':self.on_offset_mount}
+                             'offset_mount':self.on_offset_mount,
+                             'focus_sweep':self.on_focus_sweep,
+                             'cancel_focus_sweep':self.on_cancel_focus_sweep,
+                             'set_cal_stage':self.on_set_calstage}
         
         # Start with camera framing but in open loop
         self.framing = True
         self.loop_state = 'open'
-        self.guiding_mode = 'annulus_sep'
+        self.guiding_mode = 'annulus_com'
         self.plate_solve_running = False
         self.plate_solve_success = False
         self.plate_solve_ra_mispointing_arcsec = None
         self.plate_solve_dec_mispointing_arcsec = None
-        self.wcs_hdr_dict = {}
+        self.wcs_hdr_dict = {'WCSSOLVE': 'False'}
         self.fits_hdr = {}
 
         # Inform GUI
@@ -420,7 +445,7 @@ class GuidingSystem():
         elif self.cam_type == 'andor':
             self.cam = andor_cam.AndorGuiderCam(base_directory,'zyla.ini',
                                                 new_image_callback=\
-                                                self.new_image_callback)
+                                                self.new_image_callback,logger=self.logger)
         elif self.cam_type == 'asi':
             self.cam = asi_cam.ASIGuiderCam(base_directory,'asi_cam.ini',
                                             new_image_callback=\
@@ -455,6 +480,9 @@ class GuidingSystem():
                                               'calstage.ini',
                                               logger = self.logger,
                                               simulate = False)
+            self.logger.info("Connecting to calstage PI controller")
+            self.calstage.connect()
+            self.logger.info("Connected to calstage PI controller")
             
 #-------------------------------------------------------------------------------
     def init_image_processing(self,config):
@@ -473,6 +501,9 @@ class GuidingSystem():
             quad_image_processor.ImageProcessor(config,logger=self.logger)
         self.model_image_processor = \
             model_image_processor.ImageProcessor(config,logger=self.logger)
+        self.com_image_processor = \
+            com_image_processor.ImageProcessor(config,logger=self.logger)
+        
         
 #-------------------------------------------------------------------------------
     def init_pid(self,config):
@@ -519,7 +550,7 @@ class GuidingSystem():
             self.telescope = star_projector.StarProjector("./",
                                                           "star_projector.ini")
         elif (self.telescope_type == 'dfm'):
-            self.telescope = dfm_telescope.DFMTelescope('./','telescope.ini')
+            self.telescope = dfm_telescope.DFMTelescope('./','telescope.ini', logger=self.logger)
 
 #-------------------------------------------------------------------------------
     def get_header(self):
@@ -605,7 +636,7 @@ class GuidingSystem():
         acquisition, camera full y and x dimension in pixels, plus the current
         ROI in use, followed by the image
         '''
-        self.logger.info("Frame %i" % (self.counter,))
+        #self.logger.info("Frame %i" % (self.counter,))
         self.counter += 1
         self.dateobs = dateobs
 #        self.fits_hdr = self.get_header()
@@ -700,7 +731,8 @@ class GuidingSystem():
                 print(e)
         elif ((self.guiding_mode == 'annulus_quad') or
               (self.guiding_mode == 'annulus_sep') or
-              (self.guiding_mode == 'annulus_model')):
+              (self.guiding_mode == 'annulus_model') or
+              (self.guiding_mode == 'annulus_com')):
             try:
                 self.perform_annulus_guiding(self.guiding_mode,
                                              self.sci_roi,
@@ -711,6 +743,9 @@ class GuidingSystem():
                                              self.sci_roi_x1,
                                              self.sci_roi_x2)
             except Exception as e:
+                exc_type, exc_obj, exc_tb = sys.exc_info()
+                fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                print(exc_type, fname, exc_tb.tb_lineno)
                 print("Error performing annulus guiding in mode",
                       self.guiding_mode )
                 print(e)
@@ -727,20 +762,109 @@ class GuidingSystem():
 
         if self.telemetry:
             self.send_telemetry()
-        
+
+        if self.focus_sweep_running:
+            self.run_focus_sweep_actions()
+
         if self.save_images:
             save_thread = self.save_image_in_thread()
 
+#-------------------------------------------------------------------------------
+    def analyze_focus_image(self,image):
+        print("Analyzing focus step image: %i" %
+              (self.current_focus_step,))
+
+        self.logger.info("Analyzing focus step image: %i" %
+                         (self.current_focus_step,))
+
+        stars = self.sep_image_processor.get_stars(image)        
+        # take the star closest to the center of the frame
+        xcen = self.sci_fiber_xcenter_pix
+        ycen = self.sci_fiber_ycenter_pix
+        distance = ((stars[:,0]-xcen)**2 + (stars[:,1]-ycen)**2)**0.5
+        ndx = np.argmin(distance)
+        fwhm = stars[ndx,3]*self.arcsec_per_pixel
+
+        nstars = len(stars)
+        self.logger.info('Detected ' + str(nstars) +
+                         ' stars, with a center star FWHM of ' +\
+                         str(round(fwhm,2)) + '"')
+        print('Detected ' + str(nstars) +
+              ' stars, with a center star FWHM of ' +\
+              str(round(fwhm,2)) + '"')
+        return (fwhm)
+    
+#-------------------------------------------------------------------------------
+    def run_focus_sweep_actions(self):
+        desired_focus = self.focus_positions[self.current_focus_step]
+        tolerance = 5.
+        
+        if self.focus_sweep_state == "Off":
+            pass
+        elif self.focus_sweep_state == "Step":
+            self.telescope.move_focus(desired_focus)
+            self.focus_t0 = datetime.datetime.utcnow()            
+            self.focus_sweep_state = "Moving"
+        elif self.focus_sweep_state == "Moving":
+            elapsedTime = (datetime.datetime.utcnow() -
+                           self.focus_t0).total_seconds()
+            focpos = self.telescope.read_focuser_position()
+            if (abs(focpos-desired_focus) > tolerance):
+                if elapsedTime > 30:
+                    self.focus_sweep_state = "Error"
+            else:
+                self.focus_sweep_state = "Acquiring"
+        elif self.focus_sweep_state == "Acquiring":
+            # Analyze image here
+            # the sleep ensures that no matter where the camera is in the exposure cycle,
+            # the analyzed image will be fully exposed after it was done moving
+            time.sleep(2.0*self.cam.get_frame_period())
+            focpos = self.telescope.read_focuser_position()            
+            fwhm = self.analyze_focus_image(self.image)
+            self.focus_results.append((focpos,fwhm))
+            if self.current_focus_step < self.num_focus_steps-1:
+                self.current_focus_step += 1
+                self.focus_sweep_state = "Step"
+            else:
+                # Deliver results
+                self.telescope.move_focus(self.focus_start_pos)
+                self.focus_sweep_state = "Off"
+                self.focus_sweep_running = False
+                self.current_focus_step = 0
+                self.event_sender.send({'focus_results':self.focus_results})
+
+        elif self.focus_sweep_state == "Error":
+            print("Error in focus sweep")
+            self.focus_sweep_state = "Off"
+
+        # self.move_focus(position)
+        # t0 = datetime.datetime.utcnow()
+        # focpos = self.read_focuser_position()
+        # elapsedTime = (datetime.datetime.utcnow() - t0).total_seconds()
+        # while (elapsedTime < timeout) and (abs(focpos-position) > tolerance):
+        #     time.sleep(0.1)
+        #     focpos = self.read_focuser_position()
+        #     elapsedTime = (datetime.datetime.utcnow() - t0).total_seconds()
+            
+        # return abs(focpos - position) < tolerance
+        
+        
+            
 #-------------------------------------------------------------------------------
     def set_loop_state(self,param):
         if param == 0:
             self.loop_state = 'open'
             res = self.event_sender.send({'loop_state':0})
-            print('Opened loops')            
+            print('Opened loops')
         elif param == 1:
+#            self.pid.reset()            
             self.loop_state = 'closed'
             res = self.event_sender.send({'loop_state':1})
-            self.pid.reset()
+
+            # Apply full error on first iteration of track loop if desired.
+            if self.turbo_mode == "on":
+                self.apply_turbo = True
+
             print('Closed loops')
         return(0)
 
@@ -752,6 +876,9 @@ class GuidingSystem():
         elif param == 'annulus_sep':
             print("Setting guiding mode to annulus sep guiding")
             self.guiding_mode = 'annulus_sep'
+        elif param == 'annulus_com':
+            print("Setting guiding mode to annulus com guiding")
+            self.guiding_mode = 'annulus_com'            
         elif param == 'annulus_quad':
             print("Setting guiding mode to annulus quad guiding")
             self.guiding_mode = 'annulus_quad'
@@ -770,9 +897,10 @@ class GuidingSystem():
         if len(param) != 2:
             return(-1)
         else:
-            print("Setting FSM to angle %f %f" % (param[1],param[0]))
+            print("Setting FSM to angle y: %f x: %f" % (param[1],param[0]))
             try:
                 self.tiptilt.move_north_east(param[1],param[0])
+                self.pid.reset()
             except Exception as e:
                 print(e)
 
@@ -784,6 +912,60 @@ class GuidingSystem():
             print("Setting offset to angle y:%f x:%f arcsec" % (param[1],param[0]))
             self.offset=(param[1],param[0])
 
+#-------------------------------------------------------------------------------
+    def apply_offload_angle(self,param):
+        print("Offloading")
+        if len(param) != 2:
+            return(-1)
+        else:
+            yoffload = self.y_correction_arcsec
+            xoffload = self.x_correction_arcsec
+            yoffload_pixels = yoffload / self.arcsec_per_pixel
+            xoffload_pixels = xoffload / self.arcsec_per_pixel
+
+            max_offload_angle_arcsec = 20
+            if ((abs(yoffload) > max_offload_angle_arcsec) or
+                (abs(xoffload) > max_offload_angle_arcsec)):
+                print("Offload too large. Ignoring.")
+                return
+            
+            self.logger.info("Performing coordinated mount offload of y:%f x:%f arcsec" % (yoffload,xoffload))
+            
+            # PA = 90. * math.pi / 180           
+            # dec_offload_arcsec = \
+            #     (xoffload * math.cos(PA) -
+            #      yoffload * math.sin(PA))
+            # ra_offload_arcsec  = \
+            #     (xoffload * math.sin(PA) +
+            #      yoffload * math.cos(PA))
+
+            # use the CD matrix (deg/pix) to convert XY to east/north (arcsec)
+            ra_offload_arcsec  = (xoffload_pixels * self.telescope.cd11 +
+                                  yoffload_pixels * self.telescope.cd12) *3600.0
+            dec_offload_arcsec = (xoffload_pixels * self.telescope.cd21 +
+                                  yoffload_pixels * self.telescope.cd22) * 3600.0
+
+            if ((self.telescope_type == 'projector') or
+                (self.telescope_type == 'dfm')):
+                self.tiptilt.move_north_east(0,0)
+                self.pid.reset()
+                mount_coords = self.telescope.read_target_object_coordinates()
+                mount_dec = mount_coords['mean_dec']                
+                print("Jogging telescope %f %f" % (-1.*ra_offload_arcsec,
+                                                   -1.*dec_offload_arcsec))
+                # self.telescope.jog(-1.*ra_offload_arcsec/
+                #                    math.cos(mount_dec*math.pi/180),
+                #                    -1.*dec_offload_arcsec)
+                self.telescope.jog(-1.*ra_offload_arcsec,
+                                   -1.*dec_offload_arcsec)
+
+                self.nullify_plate_solve()                
+            else:
+                print("Can't perform offload with telescope_type:",
+                      self.telescope_type)
+            
+
+            
 #-------------------------------------------------------------------------------
     def set_loop_gains(self,param):
         if len(param) != 3:
@@ -801,54 +983,87 @@ class GuidingSystem():
             self.event_sender.send({'loop_gains':(self.KP,self.KI,self.KD)})
 
 #-------------------------------------------------------------------------------
-    def on_plate_solve(self,param):
+    def set_threshold(self,param):
+        print("Setting SEP pixel threshold to :%f" % (param,))
+        self.threshold = param
+        self.event_sender.send({'threshold':(self.threshold,)})
+
+#-------------------------------------------------------------------------------
+    def set_turbo_mode(self,param):
+        if param == 1:
+            print("Setting turbo mode on")
+            self.logger.info("Setting turbo mode on")
+            self.turbo_mode = "on"
+        elif param == 0:
+            print("Setting turbo mode off")
+            self.logger.info("Setting turbo mode off")
+            self.turbo_mode = "off"            
+        self.event_sender.send({'turbo_mode':(self.turbo_mode,)})
+        
+#-------------------------------------------------------------------------------
+    def nullify_plate_solve(self):
         self.plate_solve_success = False
-        self.plate_solve_running = True
+        self.plate_solve_running = False
         self.wcs_hdr_dict = {'WCSSOLVE': 'False'}
         self.plate_solve_ra_mispointing_arcsec = None
         self.plate_solve_dec_mispointing_arcsec = None
+            
+#-------------------------------------------------------------------------------
+    def on_plate_solve(self,param):
+        print("Plate solving")
+        self.nullify_plate_solve()
         self.event_sender.send({'plate_solve_event':
                                 (self.plate_solve_success,
                                  self.plate_solve_running,
                                  self.wcs_hdr_dict,
                                  None,None,None)})
-        
-#        # Get this from telescope
-        coords = self.telescope.read_mount_coordinates()
-#        coords = {"RA":40.4638/15.0,"Dec":42.7809,'equinox':2000.0}
-#        filename = self.get_next_filename()
-#        hdr = self.fits_hdr
-#        hdr['RA'] = coords['RA']*15
-#        hdr['DEC'] = coords['Dec']
-#        hdr['PIXSCALE'] = self.arcsec_per_pixel
-#        hdu = fits.PrimaryHDU(self.image,header=hdr)
-#        hdulist = fits.HDUList([hdu])
-#        hdulist.writeto(filename, overwrite=True)
 
-        # this takes a bit longer, but gives a standard image with a full header 
+        # Get this from telescope
+        target_coords = self.telescope.read_target_object_coordinates()
+
+        # this takes a bit longer, but gives a standard image with a full header
         filename = self.save_image(self.image)
-#        filename = '/home/tres/jan/tres-guider/images/platesolving/input_image.fits'
-        
-        res = self.wcs_acquire(filename,coords)
+
+#        self.logger.error("*** Hard-coding the platesolve image for debugging! Don't leave this in! ***")
+#        target_coords['mean_ra'] = 19.74
+#        target_coords['mean_dec'] = 40.30
+#        filename = '/tdata/tres/2021.1108/guider/000014.test.fits'
+
+        targetra = target_coords['mean_ra']*15.0 # convert to degrees
+        targetdec = target_coords['mean_dec']
+        equinox = target_coords['equinox']
+
+        print("Tel target obj coords:",targetra,targetdec,equinox)
+        self.telescope_target_ra = targetra
+        self.telescope_target_dec = targetdec
+
+        print("Starting wcs_acquire")
+        res = self.wcs_acquire(filename,target_coords)
+            
         self.plate_solve_success = res[0]
         self.targety = res[1]
         self.targetx = res[2]
         self.wcs_hdr_dict = res[3]        
-        
-        science_fiber_sky = astrometry.pixels2sky(self.wcs_hdr_dict,
-                                                  self.sci_fiber_ycenter_pix,
-                                                  self.sci_fiber_xcenter_pix)
-        print(science_fiber_sky)
-        target_skycoord = SkyCoord(coords['RA']*15.0,coords['Dec'],unit="deg",
-                                   frame='fk5')
-#        print(science_fiber_sky)
-#        print(target_skycoord)
-        dra, ddec = science_fiber_sky.spherical_offsets_to(target_skycoord)
-        self.plate_solve_ra_mispointing_arcsec = dra.to(u.arcsec).value
-        self.plate_solve_dec_mispointing_arcsec = ddec.to(u.arcsec).value
-        print('Pointing error RA: %f" Dec: %f"' %
-              (self.plate_solve_ra_mispointing_arcsec,
-               self.plate_solve_dec_mispointing_arcsec))
+
+        if self.plate_solve_success:
+            science_fiber_sky = astrometry.pixels2sky(self.wcs_hdr_dict,
+                                                      self.sci_fiber_ycenter_pix,
+                                                      self.sci_fiber_xcenter_pix)
+            print("science fiber ra dec",science_fiber_sky)
+            target_skycoord = SkyCoord(targetra,targetdec,unit="deg",frame='fk5')
+            print("tel target ra dec:",target_skycoord)
+            dra, ddec = science_fiber_sky.spherical_offsets_to(target_skycoord)
+            print("dra, ddec ",dra,ddec)
+            self.plate_solve_ra_mispointing_arcsec = dra.to(u.arcsec).value
+            self.plate_solve_dec_mispointing_arcsec = ddec.to(u.arcsec).value
+            print('Pointing error RA: %f" Dec: %f"' %
+                  (self.plate_solve_ra_mispointing_arcsec,
+                   self.plate_solve_dec_mispointing_arcsec))
+        else:
+            self.plate_solve_ra_mispointing_arcsec = None
+            self.plate_solve_dec_mispointing_arcsec = None
+            
+            
         print('Done with plate solving')
         self.plate_solve_running = False
         self.event_sender.send({'plate_solve_event':
@@ -860,27 +1075,94 @@ class GuidingSystem():
 
 #-------------------------------------------------------------------------------
     def on_offset_mount(self,param):
+        '''The angles passed should be angles as seen by the guider camera, or
+        fsm. The equatorial mount ra offset command will divided by cos(dec)
+        in this routine'''
         ra_offset = param[0]
         dec_offset = param[1]
+        mount_coords = self.telescope.read_target_object_coordinates()
+        mount_dec = mount_coords['mean_dec']
         print('Offsetting mount by RA("): %f DEC ("): %f' %
               (ra_offset,dec_offset))
         if self.telescope_type == 'projector' or self.telescope_type == 'dfm':
             self.telescope.jog(ra_offset,dec_offset)
-                                     
+            
+            self.nullify_plate_solve()
+
+#-------------------------------------------------------------------------------
+    def on_focus_sweep(self,param):
+        if self.focus_sweep_running == False:            
+            print('Performing focus sweep')
+            self.current_focus_step = 0
+            self.focus_start = param[0]
+            self.focus_stop = param[1]
+            self.num_focus_steps = param[2]
+            self.focus_positions = np.linspace(self.focus_start,
+                                               self.focus_stop,
+                                               self.num_focus_steps)
+            print("Focus sweep over positions: ",self.focus_positions)
+            self.focus_sweep_running = True
+            self.focus_results = []
+            self.focus_start_pos = self.telescope.read_focuser_position()
+            self.focus_sweep_state = "Step"
+        else:
+            print("Error: Can't perform focus sweep while another is active.")
+
+#-------------------------------------------------------------------------------
+    def on_cancel_focus_sweep(self,param):
+        if self.focus_sweep_running == True:
+            print("Canceling focus sweep at step %i" %
+                  (self.current_focus_step))
+            self.focus_sweep_running = False
+            self.current_focus_step = 0
+        else:
+            print("No sweep running during call to cancel focus sweep")
+
+#-------------------------------------------------------------------------------
+    def on_set_calstage(self,param):
+        request = param
+        self.logger.info("Calstage request=" + str(request))
+        try:
+            request = float(request)
+            if abs(request - self.calstage.get_position()) > 0.01:
+                self.is_calstage_moving = True
+                self.calstage.move_and_wait(request)
+                self.is_calstage_moving = False
+                self.logger.info("Done moving calstage to position %f" %(request,))
+        except: 
+            #calstage.logger.info('position=' + calstage.get_position_string())
+            if request != self.calstage.get_position_string():
+                self.logger.info("request = " + request + ", current position = " + \
+                                     self.calstage.get_position_string())
+                self.is_calstage_moving = True
+                if request == 'science':
+                    self.calstage.move_to_science()
+                elif request == 'sky':
+                    self.calstage.move_to_sky()
+                elif request == 'out':
+                    self.calstage.move_to_out()
+                elif request == 'block_sky':
+                    self.calstage.move_to_block_sky()
+                elif request == 'block_science':
+                    self.calstage.move_to_block_science()
+                else:
+                    self.logger.info("Invalid calstage position name.")
+                self.is_calstage_moving = False
+                self.logger.info("Done moving calstage to named position: "+ request)
+                
+
 #-------------------------------------------------------------------------------
     def set_framing_state(self,param):
-        # Not working yet.
-        return(0)
-    
         if param == 0:
             self.framing = False
             self.cam.stop_framing()
-            res = self.event_sender.send({'framing':0})
+#            res = self.event_sender.send({'framing':0})
             print('Stopping camera framing')            
         elif param == 1:
-            self.framing = True
-            self.cam.start_framing()
-            res = self.event_sender.send({'framing':1})
+            if self.framing == False:
+                self.framing = True
+                self.start()
+#            res = self.event_sender.send({'framing':1})
             print('Starting camera framing')
         return(0)
 
@@ -905,6 +1187,44 @@ class GuidingSystem():
             res = self.event_sender.send({'exposure_time':self.cam.get_exposure_time()})            
         return(0)
 
+#-------------------------------------------------------------------------------
+    def set_cam_exp_cadence(self,param):
+        new_exp = param[0]
+        new_cadence = param[1]
+        current_exp = self.cam.get_exposure_time()
+        current_cadence = self.cam.get_frame_period()
+
+        print("Current exposure and cadence are %f %f" %
+              (current_exp,current_cadence))
+
+        print("Got message to set exposure and cadence to %f %f" %
+              (new_exp,new_cadence))
+        
+#         if ((new_exp >= 0) and (new_exp < 1000)):
+#             if new_exp > current_cadence-self.cam.readout_time:
+# #                self.cam.set_frame_period(new_cadence)                
+#                 self.cam.set_exposure_time(new_exp)
+#             else:
+#                 self.cam.set_exposure_time(new_exp)
+#                 time.sleep(current_cadence)
+#                 self.cam.set_frame_period(new_cadence)                
+
+        if ((new_exp >= 0) and (new_exp < 1000)):
+            self.cam.set_exposure_time(new_exp)
+            time.sleep(current_cadence)
+            self.cam.set_frame_period(new_cadence)                
+        else:
+            print("Bad exposure time: Exp: %f Cadence: %f" %
+                  (new_exp,new_cadence))
+            return(0)
+        
+        # res = self.event_sender.send({'exposure_time':
+        #                               self.cam.get_exposure_time()})
+        
+        # res = self.event_sender.send({'cadence':
+        #                               self.cam.get_frame_period()})
+            
+        return(0)
     
 #-------------------------------------------------------------------------------
     def toggle_framing_state(self,param):
@@ -1036,34 +1356,37 @@ class GuidingSystem():
         return(north_arcsec,east_arcsec)
 
 #------------------------------------------------------------------------------ 
-    def wcs_acquire(self,image_name,mount_coords,offset=(0.0,0.0),
+    def wcs_acquire(self,image_name,target_coords,offset=(0.0,0.0),
                     verbose=False, use_centroid=True):
         ''' Plate solve image to compute RA/Dec of pixel grid'''
         t0 = datetime.datetime.utcnow()
-        
-#        # get target position from TCS
-#        targetra = mount_coords['RA']*15.0 # convert to degrees
-#        targetdec = mount_coords['Dec']
-#        equinox = mount_coords['equinox']
 
-#        # or do we want read_target_object_coordinates??
-#        # is there a practical difference?
-#        # we don't want to initiate large slews this way...
-        coords = self.telescope.read_target_object_coordinates()
-        targetra = coords['mean_ra']*15.0 # convert to degrees
-        targetdec = coords['mean_dec']
-        equinox = coords['equinox']
-        
+        # get target position from TCS
+        #target_coords = self.telescope.read_target_object_coordinates()
+        targetra = target_coords['mean_ra']*15.0 # convert to degrees
+        targetdec = target_coords['mean_dec']
+        equinox = target_coords['equinox']
+
+        print("wcs_acquire: targetra (deg) targetdec equinox:",targetra,targetdec,equinox)        
+        self.logger.info("wcs_acquire: targetra (deg) targetdec equinox: %f %f %f "% (targetra,targetdec,equinox))
+   
         # do a plate solve on the image
         # we could probably shave off a few seconds
         # if it worked with a star list, not an image...
-        (self.plate_solve_success,self.wcs_hdr_dict) = astrometry.astrometry(image_name,radius=0.5,\
-                                                                             parity='pos',downsample=4,\
-                                                                             logger=self.logger, verbose=verbose)
+        (self.plate_solve_success,self.wcs_hdr_dict) = \
+                                                       astrometry.astrometry(image_name,radius=0.5,
+                                                                             parity='pos',downsample=8,
+                                                                             logger=self.logger,
+                                                                             verbose=verbose, use_sep=True)
+
         if self.plate_solve_success:
             # identify target
-            targetx,targety = astrometry.sky2pixels(self.wcs_hdr_dict,
+
+            # check y,x vs x,y
+            targety,targetx = astrometry.sky2pixels(self.wcs_hdr_dict,
                                                     targetra,targetdec)
+            print("wcs_acquire targety targetx:",targety,targetx)
+            self.logger.info("wcs_acquire targety targetx: %f %f " % (targety,targetx))
 
             if targetx < self.x1 or targety < self.y1 or \
                targetx > self.x2 or targety > self.y2:
@@ -1074,7 +1397,9 @@ class GuidingSystem():
             self.logger.info("Target RA=" + str(targetra) + " (deg), Dec=" + str(targetdec) +\
                              " (deg) is at (x,y)=(" + str(targetx) + "," + str(targety) + ")")
 
-            self.logger.info("WCS-based acquisition finished in " + str((datetime.datetime.utcnow() - t0).total_seconds()) + " seconds")
+            self.logger.info("WCS-based acquisition finished in " +
+                             str((datetime.datetime.utcnow() - t0).total_seconds()) +
+                             " seconds")
                 
             # slew telescope
             return (True,targety,targetx,self.wcs_hdr_dict)
@@ -1085,7 +1410,7 @@ class GuidingSystem():
 #-------------------------------------------------------------------------------
     def perform_guiding(self,image,camera_ydim_pix,camera_xdim_pix,y1,y2,x1,x2):
         '''
-        This is where the action happens.
+        This is where the action happens for full frame cv2 tracking.
         Find stars in image and compute centroids of starlike objects.
         Use star closest to desired position and use for feedback
         '''
@@ -1110,7 +1435,8 @@ class GuidingSystem():
             self.stars = np.array([])
             return
         else:
-            print("Guiding on %i stars" % (len(self.stars)))
+            #print("Guiding on %i stars" % (len(self.stars)))
+            pass
 
         # Add bottom left corner of ROI in order to have centroids be with
         # respect to full camera frame and then offset to place 0,0 in the
@@ -1123,10 +1449,10 @@ class GuidingSystem():
         # convert them to pixels
         x_errors_pixels = self.stars[:,0] + \
                           self.cam_decenter_x_pixels - \
-            ((self.sci_fiber_x + self.offset[0]) / self.arcsec_per_pixel)
+            (self.sci_fiber_x / self.arcsec_per_pixel)
         y_errors_pixels = self.stars[:,1] + \
                           self.cam_decenter_y_pixels - \
-            ((self.sci_fiber_y - self.offset[1]) / self.arcsec_per_pixel)
+            (self.sci_fiber_y / self.arcsec_per_pixel)
 
         self.x_mispointings_arcsec = x_errors_pixels * self.arcsec_per_pixel
         self.y_mispointings_arcsec = y_errors_pixels * self.arcsec_per_pixel
@@ -1144,26 +1470,50 @@ class GuidingSystem():
                                    self.arcsec_per_pixel) +
                          ') dist: ' + str(dists_arcsec[self.ndx]) +
                          ' arcsec from the requested position Trackpoint:(' +
-                         str(self.sci_fiber_x - self.offset[0]) + ',' +
-                         str(self.sci_fiber_y - self.offset[1]) + ')')
+                         str(self.sci_fiber_x - self.offset[1]) + ',' +
+                         str(self.sci_fiber_y - self.offset[0]) + ')')
         
         # if the star disappears, don't correct to a different star
         # magnitude tolerance, too? (probably not -- clouds could cause trouble)
         if (dists_arcsec[self.ndx] < self.guiding_tolerance):
             # Set desired position of star to be on the fiber, plus whatever
             # offset we want on top of that.
-            self.pid.setPoint((self.sci_fiber_y - self.offset[1],
-                               self.sci_fiber_x - self.offset[0]))
+            self.pid.setPoint((self.sci_fiber_y - self.offset[0],
+                               self.sci_fiber_x - self.offset[1]))
 
             # calculate the X & Y corrections needed in this step of the PID
             # loop in arcsec
-            self.y_correction_arcsec,self.x_correction_arcsec = \
-                self.pid.update(np.array([self.stars[self.ndx,1] *
-                                          self.arcsec_per_pixel,
-                                          self.stars[self.ndx,0] *
-                                          self.arcsec_per_pixel]))
-            self.logger.info('X Correction": '+ str(self.x_correction_arcsec) +\
-                             ' Y Correction": ' + str(self.y_correction_arcsec))
+            if self.loop_state == 'closed':
+                if self.apply_turbo:
+                    current_integrator = self.pid.getIntegrator()
+                    (orig_kp,orig_ki,orig_kd) = self.pid.getPID()
+                    print(orig_kp,orig_ki,orig_kd)
+                    self.y_correction_arcsec = -1. * \
+                                        self.y_mispointings_arcsec[self.ndx]
+                                           
+                    self.x_correction_arcsec = -1. * \
+                                        self.x_mispointings_arcsec[self.ndx]
+                    self.apply_turbo = False
+                    if (orig_ki[0] != 0) and (orig_ki[1] != 0):
+                        self.pid.setIntegrator(np.array([
+                            current_integrator[0] +
+                            self.y_correction_arcsec/orig_ki[0],
+                            current_integrator[1] +
+                            self.x_correction_arcsec/orig_ki[1]]))
+                    self.pid.setDerivator(np.array([0.,0.]))
+                    print("Applied turbo mode correction")
+                else:
+                    self.y_correction_arcsec,self.x_correction_arcsec = \
+                        self.pid.update(np.array(
+                            [self.y_mispointings_arcsec[self.ndx],
+                             self.x_mispointings_arcsec[self.ndx]]))
+                self.logger.info('X Correction": '+
+                                 str(self.x_correction_arcsec) +\
+                                 ' Y Correction": ' +
+                                 str(self.y_correction_arcsec))
+            else:
+                self.x_correction_arcsec = 0.0
+                self.y_correction_arcsec = 0.0
                          
             if ((self.cam_type == 'simulated' or self.cam_type == 'zyla'
                  or self.cam_type == 'asi') and self.loop_state == 'closed'):
@@ -1172,7 +1522,7 @@ class GuidingSystem():
             
             # convert X & Y pixel to North & East arcsec offset
             # don't need cos(dec) term unless we send via mount
-            PA = 0.0 # get from Telescope? Config file? user?
+            PA = 90.0 * math.pi / 180  # get from Telescope? Config file? user?
 
             self.dec_mispointings_arcsec = \
                 (self.x_mispointings_arcsec * math.cos(PA) -
@@ -1192,9 +1542,12 @@ class GuidingSystem():
             self.star_fwhm = 1.0+np.random.uniform(low=-0.1,high=0.1)
 
             if self.loop_state == 'closed':
-                self.tiptilt.move_north_east(
+                res = self.tiptilt.move_north_east(
                     self.y_mispointings_arcsec[self.ndx],
-                    self.y_mispointing_arcsec[self.ndx])
+                    self.x_mispointing_arcsec[self.ndx])
+                if res == False:
+                    self.loop_state = 'open'
+                    self.event_sender.send({'popup':"FSM Out of Range"})
             # TODO: make sure the move is within range
             # move_in_range = True
                 
@@ -1227,7 +1580,8 @@ class GuidingSystem():
         '''
 
         # Find stars and compute centroids in pixels
-        self.stars = self.sep_image_processor.get_stars(image)
+        self.stars = self.sep_image_processor.get_stars(image,
+                                            threshold=self.threshold)
 
         if (len(self.stars) != 1):
             self.logger.info("No or multiple stars passed to perform_guiding.")
@@ -1246,7 +1600,8 @@ class GuidingSystem():
             self.stars = np.array([])
             return
         else:
-            print("Guiding on %i stars" % (len(self.stars)))
+            pass
+            #print("Guiding on %i stars" % (len(self.stars)))
 
         self.ndx = 0
         roi_xdim_pix = x2-x1
@@ -1257,10 +1612,15 @@ class GuidingSystem():
         self.stars[:,0] -= roi_xdim_pix/2
         self.stars[:,1] -= roi_ydim_pix/2
         
-        x_errors_pixels = (self.stars[:,0] -
-                           self.offset[0] / self.arcsec_per_pixel)
-        y_errors_pixels = (self.stars[:,1] -
-                           self.offset[1] / self.arcsec_per_pixel)
+        # x_errors_pixels = (self.stars[:,0] +
+        #                    self.offset[1] / self.arcsec_per_pixel)
+        # y_errors_pixels = (self.stars[:,1] +
+        #                    self.offset[0] / self.arcsec_per_pixel)
+
+        x_errors_pixels = self.stars[:,0]
+        y_errors_pixels = self.stars[:,1]
+        
+        fwhms_pixels = self.stars[:3] * self.arcsec_per_pixel
 
         self.x_mispointings_arcsec = x_errors_pixels * self.arcsec_per_pixel
         self.y_mispointings_arcsec = y_errors_pixels * self.arcsec_per_pixel
@@ -1271,21 +1631,47 @@ class GuidingSystem():
                          ',' + str(self.stars[self.ndx,1] * \
                                    self.arcsec_per_pixel))
         
-        self.pid.setPoint((-1*self.offset[1],-1*self.offset[0]))
+        self.pid.setPoint((self.offset[0],self.offset[1]))
 
         # calculate the X & Y corrections needed in this step of the PID
         # loop in arcsec
-        self.y_correction_arcsec,self.x_correction_arcsec = \
-            self.pid.update(np.array([self.stars[self.ndx,1] *
-                                      self.arcsec_per_pixel,
-                                      self.stars[self.ndx,0] *
-                                      self.arcsec_per_pixel]))
-        self.logger.info('X Correction": '+ str(self.x_correction_arcsec) +\
-                         ' Y Correction": ' + str(self.y_correction_arcsec))
+        if self.loop_state == 'closed':
+            if self.apply_turbo:
+                current_integrator = self.pid.getIntegrator()
+                (orig_kp,orig_ki,orig_kd) = self.pid.getPID()
+                print(orig_kp,orig_ki,orig_kd)
+                self.y_correction_arcsec = -1. * \
+                                           self.stars[self.ndx,1] * \
+                                           self.arcsec_per_pixel
+                                           
+                self.x_correction_arcsec = -1. * \
+                                           self.stars[self.ndx,0] * \
+                                           self.arcsec_per_pixel
+                self.apply_turbo = False
+                if (orig_ki[0] != 0) and (orig_ki[1] != 0):
+                    self.pid.setIntegrator(np.array([
+                        current_integrator[0] +
+                        self.y_correction_arcsec/orig_ki[0],
+                        current_integrator[1] +
+                        self.x_correction_arcsec/orig_ki[1]]))
+                self.pid.setDerivator(np.array([0.,0.]))
+                print("Applied turbo mode correction")
+            else:
+            
+                self.y_correction_arcsec,self.x_correction_arcsec = \
+                            self.pid.update(np.array([self.stars[self.ndx,1] *
+                                                      self.arcsec_per_pixel,
+                                                      self.stars[self.ndx,0] *
+                                                      self.arcsec_per_pixel]))
+            self.logger.info('X Correction": '+ str(self.x_correction_arcsec) +\
+                             ' Y Correction": ' + str(self.y_correction_arcsec))
+        else:
+            self.x_correction_arcsec = 0.0
+            self.y_correction_arcsec = 0.0
                          
         # convert X & Y pixel to North & East arcsec offset
         # don't need cos(dec) term unless we send via mount
-        PA = 0.0 # get from Telescope? Config file? user?
+        PA = 90.0 * math.pi / 180   # get from Telescope? Config file? user?
 
         self.dec_mispointings_arcsec = \
                 (self.x_mispointings_arcsec * math.cos(PA) -
@@ -1302,15 +1688,22 @@ class GuidingSystem():
                  self.y_correction_arcsec * math.cos(PA))
 
         self.flux_counts = self.stars[self.ndx,2]
-        self.star_fwhm = 1.0+np.random.uniform(low=-0.1,high=0.1)
+        self.star_fwhm = self.stars[self.ndx,3] * self.arcsec_per_pixel
 
         if self.loop_state == 'closed':
-            self.tiptilt.move_north_east(self.y_correction_arcsec,
-                                         self.x_correction_arcsec)
+            res = self.tiptilt.move_north_east(self.y_correction_arcsec,
+                                               self.x_correction_arcsec)
+            if res == False:
+                self.loop_state = 'open'
+                self.event_sender.send({'popup':"FSM Out of Range"})
+
+            
+            
 
 #-------------------------------------------------------------------------------
     def perform_annulus_guiding(self,guiding_mode,image,
-                                camera_ydim_pix,camera_xdim_pix,y1,y2,x1,x2):
+                                camera_ydim_pix,camera_xdim_pix,
+                                y1,y2,x1,x2):
         '''
         This is where the action happens.
         Use annulus algorithm specified by guiding mode on science fiber ROI.
@@ -1318,14 +1711,19 @@ class GuidingSystem():
 
         # Compute centroid in pixels
         if self.guiding_mode == 'annulus_sep':
-            self.stars = self.sep_image_processor.get_stars(image)
+            self.stars = \
+                self.sep_image_processor.get_stars(image,
+                                                   threshold=self.threshold)
+        elif self.guiding_mode == 'annulus_com':
+            self.stars = self.com_image_processor.get_stars(image,
+                                                   threshold=self.threshold)
         elif self.guiding_mode == 'annulus_quad':
             self.stars = self.quad_image_processor.get_stars(image)
         elif self.guiding_mode == 'annulus_model':
             self.stars = self.model_image_processor.get_stars(image)
             
         if (len(self.stars) != 1):
-            self.logger.info("No or multiple stars passed to perform_guiding.")
+            #self.logger.info("No or multiple stars passed to perform_guiding.")
             self.ndx = 0
             self.x_mispointings_arcsec = [0.0]
             self.y_mispointings_arcsec = [0.0]
@@ -1341,7 +1739,8 @@ class GuidingSystem():
             self.stars = np.array([])
             return
         else:
-            print("Guiding on %i stars" % (len(self.stars)))
+            pass
+            #print("Guiding on %i stars" % (len(self.stars)))
 
         self.ndx = 0
         roi_xdim_pix = x2-x1
@@ -1352,34 +1751,70 @@ class GuidingSystem():
         self.stars[:,0] -= roi_xdim_pix/2
         self.stars[:,1] -= roi_ydim_pix/2
         
-        x_errors_pixels = (self.stars[:,0] -
-                           self.offset[0] / self.arcsec_per_pixel)
-        y_errors_pixels = (self.stars[:,1] -
-                           self.offset[1] / self.arcsec_per_pixel)
+        # x_errors_pixels = (self.stars[:,0] +
+        #                    self.offset[1] / self.arcsec_per_pixel)
+        # y_errors_pixels = (self.stars[:,1] +
+        #                    self.offset[0] / self.arcsec_per_pixel)
 
+        x_errors_pixels = self.stars[:,0]
+        y_errors_pixels = self.stars[:,1]
+
+        
+        fwhms_pixels = self.stars[:3] * self.arcsec_per_pixel
+        
         self.x_mispointings_arcsec = x_errors_pixels * self.arcsec_per_pixel
         self.y_mispointings_arcsec = y_errors_pixels * self.arcsec_per_pixel
         
+        """
         self.logger.info("Using guide star (" +
                          str(self.stars[self.ndx,0] *
                              self.arcsec_per_pixel) + \
                          ',' + str(self.stars[self.ndx,1] * \
                                    self.arcsec_per_pixel))
-        
-        self.pid.setPoint((-1*self.offset[1],-1*self.offset[0]))
+        """
 
+        self.pid.setPoint((self.offset[0],self.offset[1]))
+        
         # calculate the X & Y corrections needed in this step of the PID
         # loop in arcsec
-        self.y_correction_arcsec,self.x_correction_arcsec = \
-            self.pid.update(np.array([self.y_mispointings_arcsec[self.ndx],
-                                      self.x_mispointings_arcsec[self.ndx]]))
-        
-        self.logger.info('Y Correction": '+ str(self.y_correction_arcsec) +\
-                         ' X Correction": ' + str(self.x_correction_arcsec))
+        if self.loop_state == 'closed':
+            if self.apply_turbo:
+                try:
+                    current_integrator = self.pid.getIntegrator()
+                    (orig_kp,orig_ki,orig_kd) = self.pid.getPID()
+                    print(orig_kp,orig_ki,orig_kd)
+                    self.y_correction_arcsec = -1. * \
+                                         self.y_mispointings_arcsec[self.ndx]
+                    self.x_correction_arcsec = -1. * \
+                                         self.x_mispointings_arcsec[self.ndx]
+                    self.apply_turbo = False
+                    if (orig_ki[0] != 0) and (orig_ki[1] != 0):
+                        self.pid.setIntegrator(np.array([
+                            current_integrator[0] +
+                            self.y_correction_arcsec/orig_ki[0],
+                            current_integrator[1] +
+                            self.x_correction_arcsec/orig_ki[1]]))
+                    self.pid.setDerivator(np.array([0.,0.]))
+                    print("Applied turbo mode correction")
+                except:
+                    exc_type, exc_obj, exc_tb = sys.exc_info()
+                    fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                    print(exc_type, fname, exc_tb.tb_lineno)
+            else:
+                self.y_correction_arcsec,self.x_correction_arcsec = \
+                    self.pid.update(np.array(
+                        [self.y_mispointings_arcsec[self.ndx],
+                         self.x_mispointings_arcsec[self.ndx]]))
+            self.logger.info('Y Correction": '+ str(self.y_correction_arcsec) +\
+                             ' X Correction": ' + str(self.x_correction_arcsec))
+        else:
+            self.x_correction_arcsec = 0.0
+            self.y_correction_arcsec = 0.0
+
                          
         # convert X & Y pixel to North & East arcsec offset
         # don't need cos(dec) term unless we send via mount
-        PA = 0.0 # get from Telescope? Config file? user?
+        PA = 90.0 * math.pi / 180 # get from Telescope? Config file? user?
 
         self.dec_mispointings_arcsec = \
                 (self.x_mispointings_arcsec * math.cos(PA) -
@@ -1396,14 +1831,18 @@ class GuidingSystem():
                  self.y_correction_arcsec * math.cos(PA))
 
         self.flux_counts = self.stars[self.ndx,2]
-        self.star_fwhm = 1.0+np.random.uniform(low=-0.1,high=0.1)
+        self.star_fwhm = self.stars[self.ndx,3] * self.arcsec_per_pixel
 
         if self.loop_state == 'closed':
 #            self.tiptilt.move_north_east(
 #                -0.8*self.y_mispointings_arcsec[self.ndx],
 #                -0.8*self.x_mispointings_arcsec[self.ndx])
-            self.tiptilt.move_north_east(self.y_correction_arcsec,
-                                         self.x_correction_arcsec)
+            res = self.tiptilt.move_north_east(self.y_correction_arcsec,
+                                               self.x_correction_arcsec)
+            if res == False:
+                self.loop_state = 'open'
+                self.event_sender.send({'popup':"FSM Out of Range"})
+            
             
 
 #-------------------------------------------------------------------------------
@@ -1481,10 +1920,12 @@ class GuidingSystem():
                         'star_roi_y2':self.star_roi_y2,
                         'camera_xcenter_pix':self.camera_xcenter_pix,
                         'camera_ycenter_pix':self.camera_ycenter_pix,
-                        'guiding_offset_x':self.offset[0],
-                        'guiding_offset_y':self.offset[1],
+                        'guiding_offset_x':self.offset[1],
+                        'guiding_offset_y':self.offset[0],
                         'fsm_angle_x':fsm_position['E'],
                         'fsm_angle_y':fsm_position['N'],
+                        'focus_sweep_running':self.focus_sweep_running,
+                        'current_focus_step':self.current_focus_step,
                         'sky_fiber_xcenter_pix':self.sky_fiber_xcenter_pix,
                         'sky_fiber_ycenter_pix':self.sky_fiber_ycenter_pix,
                         'pixel_size_um':self.pixel_size_um,
@@ -1497,6 +1938,10 @@ class GuidingSystem():
                         'loop_kp':self.KP,
                         'loop_ki':self.KI,
                         'loop_kd':self.KD,
+                        'threshold':self.threshold,
+                        'turbo_mode':self.turbo_mode,
+                        'telescope_target_ra':self.telescope_target_ra,
+                        'telescope_target_dec':self.telescope_target_dec,
                         'plate_solve_success': self.plate_solve_success,
                         'plate_solve_running': self.plate_solve_running,
                         'plate_solve_ra_mispointing_arcsec': self.plate_solve_ra_mispointing_arcsec,
@@ -1510,17 +1955,25 @@ class GuidingSystem():
                         'star_roi':star_roi_base64.decode(ENCODING)})
 
         self.telem_out.send('guider_data',telem_struct)
-
             
 #-------------------------------------------------------------------------------
     def start(self):
+        if os.path.exists(self.config_file):
+            config = ConfigObj(self.config_file)
+        else:
+            logging.error('Config file not found: ('
+                          + self.config_file + ')')
+            exit()
+
+        self.init_camera(config)
         self.cam.start()
         self.framing = True
         print("Camera framing started")
 
 #-------------------------------------------------------------------------------
     def stop(self):
-        self.cam.stop_framing()
+#        self.cam.stop_framing()
+        self.cam.exit()
         self.framing = False
 
 
@@ -1531,7 +1984,7 @@ if __name__ == "__main__":
     guider = GuidingSystem(base_directory,
                            cam_type='andor',
                            tiptilt_type='pi',
-                           calstage_type='simulated',
+                           calstage_type='pi',
                            telescope_type='dfm')
     guider.start()
     loop = asyncio.get_event_loop()

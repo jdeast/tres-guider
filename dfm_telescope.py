@@ -70,7 +70,7 @@ class DFMTelescope:
 
         try:
             s.connect((self.server,self.port))
-            self.logger.info("Connected")
+            self.logger.debug("Connected")
         except:
             self.logger.error("No response from the Galil TCS Server (" + self.server +
                               ':' + str(self.port) + "). Start TCSGalil and try again")
@@ -80,28 +80,29 @@ class DFMTelescope:
 
             return None
             
-        self.logger.info("Sending command: " + cmd)
+        self.logger.debug("Sending command: " + cmd)
         s.send(cmd.encode('utf-8'))
 
         if not readback: return None       
         
-        data = ''
+        data = b''
         t0 = datetime.datetime.utcnow()
         time_elapsed = 0.0
         while True and time_elapsed < timeout:
             time_elapsed = (datetime.datetime.utcnow()-t0).total_seconds()
             data += s.recv(1024)
             try:
-                if data[-1] == ';': break
+                if data.decode()[-1] == ';': break
             except: break
             
-        self.logger.info("Closing connection")
+        self.logger.debug("Closing connection")
         s.close()
-            
+        data = data.decode()
+        
         if time_elapsed > timeout:
             self.logger.error("Timeout sending command to TCS Galil")
 
-        self.logger.info("Message received: " + data)
+        self.logger.debug("Message received: " + data)
             
         return data
 
@@ -189,7 +190,7 @@ class DFMTelescope:
         self.send('#72;',readback=False)
 
     def read_focuser_position(self):
-        self.logger.info("Reading focus position")
+        #self.logger.info("Reading focus position")
         response = self.send('#64;')
         if response != None:
             return float(response[1:-1])
@@ -228,16 +229,17 @@ class DFMTelescope:
         self.send('#27,' + str(position) + ';', readback=False)
 
     # high level focus commands
-    def move_focus_and_check(self, position, timeout=30):
+    def move_focus_and_check(self, position, tolerance=5, timeout=30):
+        self.move_focus(position)
         t0 = datetime.datetime.utcnow()
-        focpos = read_focuser_position(self)
+        focpos = self.read_focuser_position()
         elapsedTime = (datetime.datetime.utcnow() - t0).total_seconds()
-        while elapsedTime < timeout and focpos != position:
+        while (elapsedTime < timeout) and (abs(focpos-position) > tolerance):
             time.sleep(0.1)
-            focpos = read_focuser_position(self)
+            focpos = self.read_focuser_position()
             elapsedTime = (datetime.datetime.utcnow() - t0).total_seconds()
             
-        return focpos == position
+        return abs(focpos - position) < tolerance
 
     ################## END FOCUSER COMMANDS ###################
 
@@ -361,14 +363,20 @@ class DFMTelescope:
         
     # this jogs the telescope. Note if it is not in CHASE mode, set_mount_mode must be set to 1(?)
     # if requested jog is out of range, status['target_out_of_range'] will be True
+    # this command (#7) is broken on the DFM side. We'll compute our own offset instead and send a set_target_object instead to make it behave as expected
     def offset_target_object(self,east,north):
 
         # this is a limit imposed by me here. No such limit exists in the telescope
         if abs(east) > self.max_jog or abs(north) > self.max_jog:
             self.logger.error('Cannot jog more than ' + str(self.max_jog) + '" in any direction')
-            
-        return self.send("#7," + str(east) + "," + str(north) + ";", readback=False)
-        return True
+
+        target_coords = self.read_target_object_coordinates()
+        newra = target_coords['mean_ra'] + east/3600.0/15.0/math.cos(target_coords['mean_dec']*math.pi/180.0)
+        newdec = target_coords['mean_dec'] + north/3600.0
+        return self.set_target_object(newra,newdec,equinox=target_coords['equinox'])
+        
+        # this command would replace the above four if the the DFM command #7 worked like it should
+        return self.send("#7," + '{0:.3f}'.format(east) + "," + '{0:.3f}'.format(north) + ";", readback=False)
         
     # sets the target to the coordinates of the library object stored in TCSGalil.
     def set_target_object_from_library(self):
@@ -573,6 +581,17 @@ class DFMTelescope:
         self.logger.info("Turning on mount corrections")
         self.send('#66,' + str(on) + ';', readback=False)
 
+    def start_tracking(self):
+        self.send('#50;', readback=False)
+        
+    def set_tracking_mode(self,mode):
+        if mode != 0 and mode != 1:
+            self.logger.error("Supplied mode (" + str(mode) +
+                              ") not allowed; must be 0 (aux) or \
+                              1 (normal)")
+            return False                    
+        self.send('#51,' + str(mode) + ';', readback=False)
+        
     # sets the handpaddle slew rate (arcsec/sec)
     def set_slew_rate(self,rate):
         self.send('#53,' + str(rate) + ';', readback=False)
@@ -584,16 +603,45 @@ class DFMTelescope:
         
     ###### HIGHER LEVEL MOUNT COMMANDS ######
     def jog(self, east, north):
-        tcs_status = self.read_tcs_status()
+
+        self.logger.info('Jogging the telescope ' + str(east) + '" east, ' + str(north) + '" north')
+        
+        # we want to restore these when we're done
+        target = self.read_target_object_coordinates()
+#        self.logger.info('target equinox is ' + str(target['equinox']))
+        
+        # set target position to where we are + offset
+        mount_coords = self.read_mount_coordinates()
+#        self.logger.info('mount equinox is ' + str(mount_coords['equinox']))
+        newra = mount_coords['RA'] + east/3600.0/15.0/math.cos(mount_coords['Dec']*math.pi/180.0)
+        newdec = mount_coords['Dec'] + north/3600.0
+        self.set_target_object(newra, newdec)
+        
+#        self.set_target_object(mount_coords['RA'],mount_coords['Dec'], equinox=mount_coords['equinox'])
+
+
         # change to chase target mode (so it'll slew to the target)
-        if not tcs_status['mount_in_chase_target_mode']:
-            self.logger.info("Mount not in chase target mode when slew issued;\
-                              changing mode")
-            self.set_mount_mode(3)
+        self.set_mount_mode(3)
 
-        self.offset_target_object(east,north)
-            
+        # jog the telescope
+#        self.offset_target_object(east,north)
 
+        # wait until it's done moving
+        tcs_status = self.read_tcs_status()
+        elapsed_time = 0.0
+        t0 = datetime.datetime.utcnow()
+        timeout = 10.0
+        while (not tcs_status['target_captured']) or elapsed_time < timeout:
+            time.sleep(0.3)
+            elapsed_time = (datetime.datetime.utcnow() - t0).total_seconds()
+            tcs_status = self.read_tcs_status()
+
+        # set back to follow mode
+        self.set_mount_mode(1)
+
+        # reset target coordinates to original
+        self.set_target_object(target['mean_ra'],target['mean_dec'], equinox=target['equinox'])
+        
     #### this doesn't seem to work...
     def jog_bad(self,east,north):
         slewrate = 300.0
@@ -606,7 +654,6 @@ class DFMTelescope:
             
         if east > 0: self.pulse_guide(2,eastduration)
         else: self.pulse_guide(3,-eastduration)
-            
     
     # untested
     def slew(self, rahrs, decdeg, equinox=2000.0, wait=True, timeout=60.0):
@@ -695,7 +742,7 @@ class DFMTelescope:
         hdr['AZIMUTH'] = (coords['azimuth'],'Telescope Azimuth (Deg E of N)')
         hdr['ALTITUDE'] = (90 - coords['zenith_distance'],'Telescope Altitude (Deg)')
         hdr['ST'] = (coords['sidereal_time'],'Sidereal Time (HH:MM:SS.fff)')       
-        hdr['FOCPOS'] = (self.read_focuser_position(),"Focus Position (mm?)")
+        hdr['FOCPOS'] = (self.read_focuser_position(),"Focus Position (um)")
         #hdr['PMODEL'] = ('',"Pointing Model File")
         #hdr['ROTPOS'] = (rotpos,"Mechanical rotator position (degrees)")
 
@@ -738,8 +785,8 @@ def threaded_coords(telescope):
 if __name__ == '__main__':
 
     # this should work on the 60" or Tierras
-    if socket.gethostname() == 'tres-guider':
-        base_directory = '/home/tres/tres-guider/'
+    if socket.gethostname() == 'tres-new-guider':
+        base_directory = '/home/tres/jan/tres-guider/'
         config_file = 'telescope.ini'
     elif socket.gethostname() == 'Jason-THINK':
         base_directory = 'C:/tres-guider/'
@@ -755,6 +802,9 @@ if __name__ == '__main__':
 
     telescope = DFMTelescope(base_directory, config_file)
     ipdb.set_trace()
+    telescope.jog(10,10)
+
+
 
     for i in range(1000):
         status = telescope.read_tcs_status()

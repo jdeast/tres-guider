@@ -14,7 +14,7 @@ class PID:
                  D=np.array([0.0,0.0]), 
                  Derivator=np.array([0.0, 0.0]),
                  Integrator=np.array([0.0, 0.0]), 
-                 Integrator_max=20, 
+                 Integrator_max=50, 
                  Deadband = 0.0, #0.33''/pixel->.33 pix=0.1 "
                  Correction_max = float("inf"),
                  logger=None):
@@ -75,13 +75,17 @@ class PID:
 
         self.logger.info("PID: P_x: %f I_x:%f D_x:%f P_y: %f I_y:%f D_y:%f" % (self.P_value[0],self.I_value[0],self.D_value[0],self.P_value[1],self.I_value[1],self.D_value[1]))
         PID = self.P_value + self.I_value + self.D_value
+
         #for j in range(len(PID)):
         #    if abs(PID[j])>self.Correction_max:
         #        PID[j]=self.Correction_max*np.sign(PID[j])
-        if np.linalg.norm(PID)>self.Correction_max:
+        if np.linalg.norm(PID) > self.Correction_max:
             PID = PID/np.linalg.norm(PID)*self.Correction_max
         #print("PID")
         #print(PID)
+#        print ("Px: %f Ix: %f Dx: %f Py: %f Iy: %f Dy: %f" %
+#               (self.P_value[1],self.I_value[1],self.D_value[1],
+#                self.P_value[0],self.I_value[0],self.D_value[0]))
         return PID
 
     def setPoint(self,set_point):
@@ -113,6 +117,8 @@ class PID:
         self.Ki=I
         self.Kd=D
 
+    def getPID(self):
+        return(self.Kp,self.Ki,self.Kd)
         
     def getPoint(self):
         return self.set_point

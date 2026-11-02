@@ -76,15 +76,19 @@ class AndorGuiderCam(threading.Thread):
         self.sn = config['SN']
 #        self.imager.LogLevel ='VERB'
         self.imager.SensorCooling = True
-#        self.imager.TemperatureControl = -20.0
         self.imager.FanSpeed == "On"
         self.imager.CycleMode == "Continuous"
         self.imager.TriggerMode == "Software"
-        self.imager.ElectronicShutteringMode == "Global"
-        self.imager.SpuriousNoiseFilter = False
-        self.imager.StaticBlemishCorrection = False
+        self.imager.ElectronicShutteringMode == "Rolling"
+        self.imager.SpuriousNoiseFilter = True
+        self.imager.StaticBlemishCorrection = True
         self.imager.pixelEncoding = 'Mono16'
-        self.buffer_num_frames = 5
+        self.buffer_num_frames = 25
+#        self.imager.BitDepth = '16'
+#        self.imager.PreAmpGainControl = '16-bit (low noise & high well capacity)'
+        self.logger.info("Bit depth:" + str(self.imager.BitDepth))
+        self.logger.info("Shuttering mode: " + str(self.imager.ElectronicShutteringMode))
+        self.logger.info("PreAmpGain Control:" + str(self.imager.SimplePreAmpGainControl))
         self.done_framing = True
         print("Does camera support arbitrary ROIs:",self.imager.FullAOIControl)
         print("Pixel readout rate:",self.imager.PixelReadoutRate)
@@ -93,6 +97,7 @@ class AndorGuiderCam(threading.Thread):
         print("Current sensor temperature is %f" %
               (self.imager.SensorTemperature,))
         print(self.imager.TemperatureStatus)
+        
         
         self.new_image_callback = new_image_callback
         self.framing = False
@@ -104,13 +109,13 @@ class AndorGuiderCam(threading.Thread):
         self.xbin = 1
         self.ybin = 1
 
-        self.readout_time = 0.05
+        self.readout_time = 0.02
         self.set_roi(self.y1,self.x1,self.y2,self.x2)
         self.logger.info("Setting frame rate to 1 Hz")
         self.set_gain(1.0)
         self.logger.info("Setting exposure time")
         self.set_frame_period(1.0)        
-        self.set_exposure_time(0.95)
+        self.set_exposure_time(0.98)
 
         # Hardcoded here.  Should match values in tres_guider.ini
         # These don't belong here since they are optics and system related but
@@ -525,9 +530,16 @@ class AndorGuiderCam(threading.Thread):
                 if frame != None:
                     print()
                     print("Error on frame "+str(frame))
+                    self.logger.error(e)
                 self.imager.AcquisitionStop()
                 self.imager._flush()
-                raise e
+                if self.framing == True:
+                    try:
+                        self.imager.AcquisitionStart()
+                    except Exception as e2:
+                        print("Error restarting framing after camera error")
+                        self.logger.error(e2)
+                        raise(e2)
             
         self.imager.AcquisitionStop()
         self.imager._flush()

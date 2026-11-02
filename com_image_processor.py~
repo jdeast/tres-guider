@@ -1,0 +1,149 @@
+#!/usr/bin/python3
+#from __future__ import division
+
+import datetime
+import numpy as np
+import sep
+import utils
+import scipy
+from astropy.io import fits
+import glob, os
+
+################################################################################
+class ImageProcessor():
+    '''Manage image processing to compute guiding feedback'''
+    def __init__(self,config,logger=None):
+        # set up the log file
+        if logger == None:
+            self.logger = utils.setup_logger('./log/','image_processor')
+        else:
+            self.logger = logger
+            
+#-------------------------------------------------------------------------------
+    def populate_header(self,hdr):
+        '''
+        Populate FITS header passed in to set current Image processing state
+        '''
+        # WCS solution
+        #hdr['EPOCH'] = (2000,'Epoch of coordinates')
+        #hdr['SECPIX'] = (self.platescale,'arcsec/pixel')
+        #hdr['CTYPE1'] = ("RA---TAN","TAN projection")
+        #hdr['CTYPE2'] = ("DEC--TAN","TAN projection")
+        #hdr['CUNIT1'] = ("deg","X pixel scale units")
+        #hdr['CUNIT2'] = ("deg","Y pixel scale units")
+        #hdr['CRVAL1'] = (ra,"RA of reference point")
+        #hdr['CRVAL2'] = (dec,"DEC of reference point")
+        #hdr['CRPIX1'] = (self.x_sci_fiber,"X reference pixel")
+        #hdr['CRPIX2'] = (self.y_sci_fiber,"Y reference pixel")
+        #hdr['CD1_1'] = (-self.platescale*math.cos(skypa),"DL/DX")
+        #hdr['CD1_2'] = (self.platescale*math.sin(skypa),"DL/DY")
+        #hdr['CD2_1'] = (self.platescale*math.sin(skypa),"DM/DX")
+        #hdr['CD2_2'] = (self.platescale*math.cos(skypa),"DM/DY")
+        pass
+
+#-------------------------------------------------------------------------------
+    def get_stars(self,image,threshold=5.0,linearize=False,minarea=35.0):
+
+#        threshold=5.0
+        image0 = image.astype('float32')
+#        self.save_image(image0)
+
+        # compute the background using SEP black box (some sort of background smoothing)
+#        bkg = sep.Background(image0, bw=64, bh=64, fw=3, fh=3)
+#        bkg = sep.Background(image0, bw=16, bh=16, fw=3, fh=3)
+#        rms = (bkg.rms())[0][0]
+
+        # compute the background as the median of the image (integer not precise enough)
+#        bkg = np.median(image0)
+
+        # compute the background as the average of an 8x8 box
+        # in the center of the subframe (where the fiber is)
+        xsize = image0.shape[1]
+        ysize = image0.shape[0]
+        boxsize = 8
+        x1 = int(round(xsize/2.0-boxsize/2.0))
+        x2 = int(round(xsize/2.0+boxsize/2.0))
+        y1 = int(round(ysize/2.0-boxsize/2.0))
+        y2 = int(round(ysize/2.0+boxsize/2.0))
+        bkg = np.average(image0[y1:y2,x1:x2])
+        self.logger.info("background is " + str(bkg))
+
+        data_sub = image0 - bkg
+        
+        # if not above threshold, return nothing
+        rms = np.std(data_sub)
+        
+        n_high_pixels = len(data_sub[data_sub > (threshold*rms)])
+        self.logger.info("background rms is " + str(rms) + '. ' +\
+                         str(n_high_pixels) +\
+                         ' pixels above ' + str(threshold) + "*rms")
+
+        # this is just for future reference and can be deleted to save time during the guide loop
+        total_counts = np.sum(data_sub)
+        self.logger.info("total counts after subtracting background is " + str(total_counts))
+
+        if n_high_pixels < minarea:
+            self.logger.info("too few pixels above threshold (< " + str(minarea) + "), no star detected")
+            # debugging -- save the image
+            self.save_image(image)
+            return []
+
+        # if not above threshold, return nothing
+        threshold = 1000
+        if total_counts < threshold:
+            self.logger.info("too few total counts (< " + str(threshold) + "), no star detected")
+            # debugging -- save the image
+            self.save_image(image)
+            return []
+            
+        # compute the center of mass
+        ycom,xcom = scipy.ndimage.measurements.center_of_mass(data_sub)
+        self.logger.info("xcom=" + str(xcom) + " ycom=" + str(ycom))
+        if xcom < 0 or xcom > data_sub.shape[1] or ycom < 0 or ycom > data_sub.shape[0]:
+            self.logger.info("Center of mass outside of image. No star detected")
+            # debugging -- save the image
+            self.save_image(image)
+            return []            
+        
+        # apply an empirical correction to linearize the centroids in the presense of a fiber hole
+        arcsec_per_pixel = 0.162
+        fwhm=1.5 # we don't have a good way of measuring FWHM with this algorithm -- just guess
+        
+        if linearize:
+            xcoeffs = [-5.92057079357937254827, 1.94994546053956518961,
+                       1.52163423329559144292, -0.09285382061365966833,
+                       -0.00248219164683671778, 0.00831428624239682890,
+                       -0.00706333907250200968, 0.00196796002416118557,
+                       -0.00010027762856870681, -0.00002271721997398225,
+                       0.00001982430651293512, -0.00000495077857382152,
+                       0.00000052914578864362]
+            ycoeffs = [-1.83818166791017834072, 0.37554323615328955022,
+                       1.26128924333127168111, -0.00497412115830677543,
+                       0.00095443651206073010, 0.00112785322461847644,
+                       -0.00415580694302457396, 0.00085921864204361860,
+                       0.00001000033402150102, -0.00002000024174319986,
+                       0.00001240468981845740, -0.00000269948971945330,
+                       0.00000009791396381284]
+            
+            x = utils.polyval_2d(xcoeffs,xcom+1,fwhm,6,1)
+            y = utils.polyval_2d(ycoeffs,ycom+1,fwhm,6,1)
+        else:
+            x = xcom+1
+            y = ycom+1
+            
+        return(np.transpose(np.vstack((x,y,total_counts,0.0))))
+
+    def save_image(self, image):
+        datapath = '/tdata/tres/debug/'
+        fitsfiles = glob.glob(os.path.join(datapath,'*.fits'))
+        maxseq = 0
+        for file in fitsfiles:
+            thisseq = int(os.path.basename(file).split('.')[0])
+            if thisseq > maxseq: maxseq = thisseq
+        seqnum=maxseq+1                
+        filename = os.path.join(datapath,str(seqnum).zfill(6)+'.guider.fits')
+        self.logger.info("Saving " + filename)
+        hdu = fits.PrimaryHDU(image)
+        hdu.writeto(filename)
+    
+################################################################################
